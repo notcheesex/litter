@@ -223,6 +223,15 @@ jobs:
       - name: Assemble debug
         run: apps/android/gradlew -p apps/android :app:assembleDebug
 
+      - name: Upload Android debug APK
+        if: github.event_name == 'pull_request' && github.repository == 'notcheesex/litter'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk-${{ github.event.pull_request.head.sha }}
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
   ios:
     needs: shared-prep
     runs-on: macos-26
