@@ -584,11 +584,13 @@ private fun suggestedDisplayName(params: AppAlleycatPairPayload): String =
 private fun wireLabel(wire: AppAlleycatAgentWire): String = when (wire) {
     AppAlleycatAgentWire.WEBSOCKET -> "websocket"
     AppAlleycatAgentWire.JSONL -> "jsonl"
+    AppAlleycatAgentWire.TERMINAL -> "terminal"
 }
 
 fun alleycatWireStorageValue(wire: AppAlleycatAgentWire): String = when (wire) {
     AppAlleycatAgentWire.WEBSOCKET -> "websocket"
     AppAlleycatAgentWire.JSONL -> "jsonl"
+    AppAlleycatAgentWire.TERMINAL -> "terminal"
 }
 
 private const val PAIR_COMMAND = "npx kittylitter"

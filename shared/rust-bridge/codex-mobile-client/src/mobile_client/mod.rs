@@ -1724,6 +1724,12 @@ impl MobileClient {
             "MobileClient: connect_remote_over_alleycat start server_id={} node_id={} agent={} selected_agents={:?} wire={:?}",
             server_id, params.node_id, agent_name, selected_agent_names, wire
         );
+        if matches!(wire, AlleycatAgentWire::Terminal) {
+            return Err(TransportError::ConnectionFailed(
+                "Droid PTY terminal transport must be launched through the terminal session API"
+                    .to_string(),
+            ));
+        }
         let selected_agent_names = selected_agent_names
             .into_iter()
             .map(|name| name.trim().to_string())
@@ -1736,6 +1742,9 @@ impl MobileClient {
             .into_iter()
             .filter_map(|agent| {
                 if !selected_agent_names.is_empty() && !selected_agent_names.contains(&agent.name) {
+                    return None;
+                }
+                if matches!(agent.wire, AlleycatAgentWire::Terminal) {
                     return None;
                 }
                 let runtime_kind =

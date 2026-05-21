@@ -63,6 +63,24 @@ pub struct AgentCapabilities {
     pub uses_direct_codex_port: bool,
     pub supports_thread_permission_overrides: bool,
     pub reports_effective_thread_permissions: bool,
+    pub terminal: Option<AgentTerminalCapability>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentTerminalCapability {
+    pub transport: AgentTerminalTransport,
+    pub protocol_version: u32,
+    pub features: Vec<String>,
+    /// Optional agent name to connect when launching this terminal.
+    /// If absent, clients use the advertising agent's `name`.
+    pub launch_agent: Option<String>,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentTerminalTransport {
+    DroidPty,
+    TerminalPty,
 }
 
 /// Map an alleycat-advertised agent (`name` + `display_name`) to the
@@ -87,6 +105,8 @@ pub fn agent_runtime_kind(name: &str, display_name: &str) -> Option<AgentRuntime
         "opencode" | "open-code" | "open_code" => Some("opencode"),
         "claude" | "claude-code" | "claude_code" => Some("claude"),
         "droid" | "factory" | "factory-droid" | "factory_droid" => Some("droid"),
+        "droid-pty" | "droid_tui" | "droid-terminal" | "factory-droid-pty"
+        | "factory-droid-terminal" => Some("droid-terminal"),
         "hermes" => Some("hermes"),
         _ if display_name == "codex" => Some("codex"),
         _ if display_name == "pi" || display_name == "pi.dev" => Some("pi"),
@@ -98,6 +118,13 @@ pub fn agent_runtime_kind(name: &str, display_name: &str) -> Option<AgentRuntime
             || display_name == "factory droid" =>
         {
             Some("droid")
+        }
+        _ if display_name == "droid tui"
+            || display_name == "droid terminal"
+            || display_name == "factory droid tui"
+            || display_name == "factory droid terminal" =>
+        {
+            Some("droid-terminal")
         }
         _ if display_name == "hermes" => Some("hermes"),
         _ => None,
@@ -115,6 +142,7 @@ pub fn agent_runtime_kind(name: &str, display_name: &str) -> Option<AgentRuntime
 pub enum AgentWire {
     Websocket,
     Jsonl,
+    Terminal,
 }
 
 /// Reconnect strategy for an alleycat-backed session. The transport
@@ -365,6 +393,8 @@ struct AgentInfoWire {
 enum AgentWireWire {
     Websocket,
     Jsonl,
+    #[serde(alias = "terminal_pty", alias = "pty", alias = "binary_terminal")]
+    Terminal,
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,7 +411,7 @@ struct AgentPresentationWire {
     aliases: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AgentCapabilitiesWire {
     #[serde(default)]
     locks_reasoning_effort_after_activity: bool,
@@ -395,6 +425,30 @@ struct AgentCapabilitiesWire {
     supports_thread_permission_overrides: Option<bool>,
     #[serde(default)]
     reports_effective_thread_permissions: Option<bool>,
+    #[serde(default)]
+    terminal: Option<AgentTerminalCapabilityWire>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AgentTerminalCapabilityWire {
+    #[serde(default)]
+    transport: Option<AgentTerminalTransportWire>,
+    #[serde(default)]
+    protocol_version: Option<u32>,
+    #[serde(default)]
+    features: Vec<String>,
+    #[serde(default)]
+    launch_agent: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentTerminalTransportWire {
+    DroidPty,
+    #[serde(alias = "pty", alias = "terminal")]
+    TerminalPty,
 }
 
 impl From<AgentPresentationWire> for AgentPresentation {
@@ -425,6 +479,31 @@ impl From<AgentCapabilitiesWire> for AgentCapabilities {
             reports_effective_thread_permissions: value
                 .reports_effective_thread_permissions
                 .unwrap_or(true),
+            terminal: value.terminal.map(Into::into),
+        }
+    }
+}
+
+impl From<AgentTerminalCapabilityWire> for AgentTerminalCapability {
+    fn from(value: AgentTerminalCapabilityWire) -> Self {
+        AgentTerminalCapability {
+            transport: value
+                .transport
+                .map(Into::into)
+                .unwrap_or(AgentTerminalTransport::TerminalPty),
+            protocol_version: value.protocol_version.unwrap_or(1),
+            features: value.features,
+            launch_agent: value.launch_agent,
+            label: value.label,
+        }
+    }
+}
+
+impl From<AgentTerminalTransportWire> for AgentTerminalTransport {
+    fn from(value: AgentTerminalTransportWire) -> Self {
+        match value {
+            AgentTerminalTransportWire::DroidPty => Self::DroidPty,
+            AgentTerminalTransportWire::TerminalPty => Self::TerminalPty,
         }
     }
 }
@@ -561,6 +640,11 @@ pub async fn connect_app_server_client(
         AgentWire::Jsonl => RemoteAppServerClient::connect_json_line_stream(stream, args, label)
             .await
             .map_err(|error| AlleycatError::Transport(error.to_string()))?,
+        AgentWire::Terminal => {
+            return Err(AlleycatError::Transport(
+                "terminal transport cannot attach to app-server JSON/WebSocket runtime".to_string(),
+            ));
+        }
     };
     let session = Arc::new(AlleycatSession {
         connection,
@@ -595,6 +679,34 @@ pub(crate) async fn connect_jsonl_agent_stream(
         params,
         agent,
         wire: AgentWire::Jsonl,
+    });
+    Ok((AlleycatStream::new(send, recv, None), session))
+}
+
+pub(crate) async fn connect_terminal_agent_stream(
+    endpoint: &Endpoint,
+    params: ParsedPairPayload,
+    agent: String,
+) -> Result<(AlleycatStream, Arc<AlleycatSession>), AlleycatError> {
+    let (connection, mut send, mut recv) = open_stream_on(endpoint, &params).await?;
+    write_json_frame(
+        &mut send,
+        &Request::Connect {
+            v: ALLEYCAT_PROTOCOL_VERSION,
+            token: params.token.clone(),
+            agent: agent.clone(),
+            resume: None,
+        },
+    )
+    .await?;
+    let response: Response = read_json_frame(&mut recv).await?;
+    validate_response(&response)?;
+    log_session_info(&params, &agent, response.session.as_ref(), None);
+    let session = Arc::new(AlleycatSession {
+        connection,
+        params,
+        agent,
+        wire: AgentWire::Terminal,
     });
     Ok((AlleycatStream::new(send, recv, None), session))
 }
@@ -798,6 +910,7 @@ impl From<AgentWireWire> for AgentWire {
         match value {
             AgentWireWire::Websocket => Self::Websocket,
             AgentWireWire::Jsonl => Self::Jsonl,
+            AgentWireWire::Terminal => Self::Terminal,
         }
     }
 }
@@ -1034,6 +1147,43 @@ mod tests {
 
         assert!(!capabilities.supports_thread_permission_overrides);
         assert!(!capabilities.reports_effective_thread_permissions);
+        assert!(capabilities.terminal.is_none());
+    }
+
+    #[test]
+    fn response_decodes_droid_terminal_capability_separately_from_json_native() {
+        let response: Response = serde_json::from_str(
+            r#"{"v":1,"ok":true,"agents":[
+                {"name":"droid","display_name":"Droid","wire":"jsonl","available":true},
+                {"name":"droid-pty","display_name":"Droid TUI","wire":"terminal","available":true,
+                 "capabilities":{"visible_modes":["terminal"],"terminal":{"transport":"droid_pty","protocol_version":1,"features":["output","input","resize","close","error"],"launch_agent":"droid-pty","label":"Droid TUI"}}}
+            ]}"#,
+        )
+        .expect("decode response");
+        let json_agent = &response.agents[0];
+        let terminal_agent = &response.agents[1];
+
+        assert_eq!(
+            agent_runtime_kind(&json_agent.name, &json_agent.display_name),
+            Some("droid".to_string())
+        );
+        assert_eq!(AgentWire::from(json_agent.wire), AgentWire::Jsonl);
+        assert_eq!(
+            agent_runtime_kind(&terminal_agent.name, &terminal_agent.display_name),
+            Some("droid-terminal".to_string())
+        );
+        assert_eq!(AgentWire::from(terminal_agent.wire), AgentWire::Terminal);
+
+        let capability: AgentCapabilities = terminal_agent
+            .capabilities
+            .clone()
+            .expect("terminal capabilities")
+            .into();
+        let terminal = capability.terminal.expect("terminal metadata");
+        assert_eq!(terminal.transport, AgentTerminalTransport::DroidPty);
+        assert_eq!(terminal.protocol_version, 1);
+        assert_eq!(terminal.launch_agent.as_deref(), Some("droid-pty"));
+        assert!(terminal.features.iter().any(|feature| feature == "resize"));
     }
 
     #[test]

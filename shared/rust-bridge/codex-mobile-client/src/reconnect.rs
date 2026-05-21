@@ -305,6 +305,7 @@ pub(crate) fn compute_reconnect_plan_with_slingshot(
         ) {
             let wire = match server.alleycat_agent_wire.as_deref() {
                 Some("jsonl") => AlleycatAgentWire::Jsonl,
+                Some("terminal") => return None,
                 _ => AlleycatAgentWire::Websocket,
             };
             return Some(ReconnectPlan::Alleycat {

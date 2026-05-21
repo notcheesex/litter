@@ -548,6 +548,8 @@ struct AlleycatAddServerSheet: View {
             return "websocket"
         case .jsonl:
             return "jsonl"
+        case .terminal:
+            return "terminal"
         }
     }
 

@@ -1,5 +1,6 @@
 use crate::alleycat::{
-    AgentCapabilities, AgentInfo, AgentPresentation, AgentWire, AlleycatError, ParsedPairPayload,
+    AgentCapabilities, AgentInfo, AgentPresentation, AgentTerminalCapability,
+    AgentTerminalTransport, AgentWire, AlleycatError, ParsedPairPayload,
 };
 use crate::ffi::ClientError;
 
@@ -19,6 +20,7 @@ pub struct AppAlleycatPairPayload {
 pub enum AppAlleycatAgentWire {
     Websocket,
     Jsonl,
+    Terminal,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -54,6 +56,22 @@ pub struct AppAgentCapabilities {
     pub uses_direct_codex_port: bool,
     pub supports_thread_permission_overrides: bool,
     pub reports_effective_thread_permissions: bool,
+    pub terminal: Option<AppAgentTerminalCapability>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AppAgentTerminalCapability {
+    pub transport: AppAgentTerminalTransport,
+    pub protocol_version: u32,
+    pub features: Vec<String>,
+    pub launch_agent: Option<String>,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum AppAgentTerminalTransport {
+    DroidPty,
+    TerminalPty,
 }
 
 impl From<AgentPresentation> for AppAgentPresentation {
@@ -77,6 +95,28 @@ impl From<AgentCapabilities> for AppAgentCapabilities {
             uses_direct_codex_port: value.uses_direct_codex_port,
             supports_thread_permission_overrides: value.supports_thread_permission_overrides,
             reports_effective_thread_permissions: value.reports_effective_thread_permissions,
+            terminal: value.terminal.map(Into::into),
+        }
+    }
+}
+
+impl From<AgentTerminalCapability> for AppAgentTerminalCapability {
+    fn from(value: AgentTerminalCapability) -> Self {
+        Self {
+            transport: value.transport.into(),
+            protocol_version: value.protocol_version,
+            features: value.features,
+            launch_agent: value.launch_agent,
+            label: value.label,
+        }
+    }
+}
+
+impl From<AgentTerminalTransport> for AppAgentTerminalTransport {
+    fn from(value: AgentTerminalTransport) -> Self {
+        match value {
+            AgentTerminalTransport::DroidPty => Self::DroidPty,
+            AgentTerminalTransport::TerminalPty => Self::TerminalPty,
         }
     }
 }
@@ -140,6 +180,7 @@ impl From<AppAlleycatAgentWire> for AgentWire {
         match value {
             AppAlleycatAgentWire::Websocket => Self::Websocket,
             AppAlleycatAgentWire::Jsonl => Self::Jsonl,
+            AppAlleycatAgentWire::Terminal => Self::Terminal,
         }
     }
 }
@@ -149,6 +190,7 @@ impl From<AgentWire> for AppAlleycatAgentWire {
         match value {
             AgentWire::Websocket => Self::Websocket,
             AgentWire::Jsonl => Self::Jsonl,
+            AgentWire::Terminal => Self::Terminal,
         }
     }
 }

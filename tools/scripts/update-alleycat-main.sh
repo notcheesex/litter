@@ -31,7 +31,7 @@ fi
 # now verifies the pinned Alleycat lockfile state instead of refreshing a
 # floating branch. Keep this value in sync with the Cargo.toml pins and
 # lockfiles.
-ALLEYCAT_REV="4e42351d8ce670805b1c12d9dc2830ed123c9189"
+ALLEYCAT_REV="6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8"
 ALLEYCAT_SOURCE_URL="https://github.com/notcheesex/alleycat.git"
 
 verify_metadata_locked() {

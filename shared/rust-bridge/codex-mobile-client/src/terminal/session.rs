@@ -30,6 +30,13 @@ pub enum TerminalBackendKind {
         relay: Option<String>,
         shell: Option<String>,
     },
+    RemoteDroidPty {
+        node_id: String,
+        token: String,
+        relay: Option<String>,
+        agent: Option<String>,
+        cwd: Option<String>,
+    },
     RemoteSsh {
         host: String,
         port: u16,

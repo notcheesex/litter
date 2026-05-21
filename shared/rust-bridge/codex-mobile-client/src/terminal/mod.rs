@@ -6,6 +6,7 @@
 
 mod backend;
 mod config;
+mod droid_pty;
 mod input;
 mod links;
 mod local_ish;
