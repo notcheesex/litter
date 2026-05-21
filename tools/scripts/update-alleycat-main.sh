@@ -18,7 +18,7 @@ case "${1:-}" in
 esac
 
 if [ "${LITTER_SKIP_ALLEYCAT_UPDATE:-0}" = "1" ]; then
-  echo "==> Skipping Alleycat main refresh (LITTER_SKIP_ALLEYCAT_UPDATE=1)"
+  echo "==> Skipping pinned Alleycat resolution (LITTER_SKIP_ALLEYCAT_UPDATE=1)"
   exit 0
 fi
 
@@ -27,17 +27,14 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-ALLEYCAT_MAIN_SHA="$(
-  git ls-remote https://github.com/dnakov/alleycat.git refs/heads/main \
-    | awk '{ print $1; exit }'
-)"
-if [ -z "$ALLEYCAT_MAIN_SHA" ]; then
-  echo "error: could not resolve dnakov/alleycat main" >&2
-  exit 1
-fi
+# This script name is retained for compatibility with existing build lanes, but
+# mission-relevant Alleycat resolution must be deterministic. Keep this value in
+# sync with the Cargo.toml pins and lockfiles.
+ALLEYCAT_REV="4e42351d8ce670805b1c12d9dc2830ed123c9189"
+ALLEYCAT_SOURCE_URL="https://github.com/notcheesex/alleycat.git"
 
 update_shared() {
-  echo "==> Resolving shared Rust Alleycat deps to dnakov/alleycat main ($ALLEYCAT_MAIN_SHA)..."
+  echo "==> Resolving shared Rust Alleycat deps to $ALLEYCAT_SOURCE_URL rev $ALLEYCAT_REV..."
   for package in \
     alleycat-bridge-core \
     alleycat-pi-bridge \
@@ -48,17 +45,17 @@ update_shared() {
       --quiet \
       --manifest-path "$REPO_DIR/shared/rust-bridge/Cargo.toml" \
       -p "$package" \
-      --precise "$ALLEYCAT_MAIN_SHA"
+      --precise "$ALLEYCAT_REV"
   done
 }
 
 update_kittylitter() {
-  echo "==> Resolving kittylitter Alleycat dep to dnakov/alleycat main ($ALLEYCAT_MAIN_SHA)..."
+  echo "==> Resolving kittylitter Alleycat dep to $ALLEYCAT_SOURCE_URL rev $ALLEYCAT_REV..."
   cargo update \
     --quiet \
     --manifest-path "$REPO_DIR/services/kittylitter/Cargo.toml" \
     -p alleycat \
-    --precise "$ALLEYCAT_MAIN_SHA"
+    --precise "$ALLEYCAT_REV"
 }
 
 case "$MODE" in
