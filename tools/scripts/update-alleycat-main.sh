@@ -27,35 +27,43 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-# This script name is retained for compatibility with existing build lanes, but
-# mission-relevant Alleycat resolution must be deterministic. Keep this value in
-# sync with the Cargo.toml pins and lockfiles.
+# This script name is retained for compatibility with existing build lanes. It
+# now verifies the pinned Alleycat lockfile state instead of refreshing a
+# floating branch. Keep this value in sync with the Cargo.toml pins and
+# lockfiles.
 ALLEYCAT_REV="4e42351d8ce670805b1c12d9dc2830ed123c9189"
 ALLEYCAT_SOURCE_URL="https://github.com/notcheesex/alleycat.git"
 
+verify_metadata_locked() {
+  local label="$1"
+  local manifest_path="$2"
+  local expected_source
+  local metadata_file
+
+  expected_source="git+$ALLEYCAT_SOURCE_URL?rev=$ALLEYCAT_REV#$ALLEYCAT_REV"
+  metadata_file="$(mktemp)"
+  echo "==> Verifying $label Alleycat deps with cargo metadata --locked --manifest-path $manifest_path --format-version 1"
+  cargo metadata \
+    --locked \
+    --manifest-path "$manifest_path" \
+    --format-version 1 \
+    >"$metadata_file"
+
+  echo "==> Resolved $label Alleycat sources:"
+  if ! grep -F -o "$expected_source" "$metadata_file" | sort -u; then
+    rm -f "$metadata_file"
+    echo "error: $label did not resolve Alleycat from $expected_source" >&2
+    exit 1
+  fi
+  rm -f "$metadata_file"
+}
+
 update_shared() {
-  echo "==> Resolving shared Rust Alleycat deps to $ALLEYCAT_SOURCE_URL rev $ALLEYCAT_REV..."
-  for package in \
-    alleycat-bridge-core \
-    alleycat-pi-bridge \
-    alleycat-claude-bridge \
-    alleycat-opencode-bridge
-  do
-    cargo update \
-      --quiet \
-      --manifest-path "$REPO_DIR/shared/rust-bridge/Cargo.toml" \
-      -p "$package" \
-      --precise "$ALLEYCAT_REV"
-  done
+  verify_metadata_locked "shared Rust" "$REPO_DIR/shared/rust-bridge/Cargo.toml"
 }
 
 update_kittylitter() {
-  echo "==> Resolving kittylitter Alleycat dep to $ALLEYCAT_SOURCE_URL rev $ALLEYCAT_REV..."
-  cargo update \
-    --quiet \
-    --manifest-path "$REPO_DIR/services/kittylitter/Cargo.toml" \
-    -p alleycat \
-    --precise "$ALLEYCAT_REV"
+  verify_metadata_locked "kittylitter" "$REPO_DIR/services/kittylitter/Cargo.toml"
 }
 
 case "$MODE" in
