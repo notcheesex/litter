@@ -24,7 +24,7 @@ path = "src/main.rs"
 [dependencies]
 # Pinned to the approved Alleycat fork so KittyLitter host behavior cannot
 # drift with upstream main during mission CI/release lanes.
-alleycat = { git = "https://github.com/notcheesex/alleycat.git", rev = "deb5a92b679bed337fbe13d4eea9da119fc8ed90" }
+alleycat = { git = "https://github.com/notcheesex/alleycat.git", rev = "aca3e3e22ecb2b0c747e341725a9d8bd32805dc6" }
 anyhow = "1"
 
 # cargo-dist builds with `cargo build --profile dist`. Mirrors the
