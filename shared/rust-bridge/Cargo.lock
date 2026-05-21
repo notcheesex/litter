@@ -313,7 +313,7 @@ dependencies = [
 [[package]]
 name = "alleycat-bridge-core"
 version = "0.1.0"
-source = "git+https://github.com/notcheesex/alleycat.git?rev=6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8#6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8"
+source = "git+https://github.com/notcheesex/alleycat.git?rev=deb5a92b679bed337fbe13d4eea9da119fc8ed90#deb5a92b679bed337fbe13d4eea9da119fc8ed90"
 dependencies = [
  "alleycat-codex-proto",
  "anyhow",
@@ -332,7 +332,7 @@ dependencies = [
 [[package]]
 name = "alleycat-claude-bridge"
 version = "0.1.0"
-source = "git+https://github.com/notcheesex/alleycat.git?rev=6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8#6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8"
+source = "git+https://github.com/notcheesex/alleycat.git?rev=deb5a92b679bed337fbe13d4eea9da119fc8ed90#deb5a92b679bed337fbe13d4eea9da119fc8ed90"
 dependencies = [
  "alleycat-bridge-core",
  "alleycat-codex-proto",
@@ -356,7 +356,7 @@ dependencies = [
 [[package]]
 name = "alleycat-codex-proto"
 version = "0.1.0"
-source = "git+https://github.com/notcheesex/alleycat.git?rev=6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8#6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8"
+source = "git+https://github.com/notcheesex/alleycat.git?rev=deb5a92b679bed337fbe13d4eea9da119fc8ed90#deb5a92b679bed337fbe13d4eea9da119fc8ed90"
 dependencies = [
  "chrono",
  "serde",
@@ -367,7 +367,7 @@ dependencies = [
 [[package]]
 name = "alleycat-opencode-bridge"
 version = "0.1.0"
-source = "git+https://github.com/notcheesex/alleycat.git?rev=6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8#6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8"
+source = "git+https://github.com/notcheesex/alleycat.git?rev=deb5a92b679bed337fbe13d4eea9da119fc8ed90#deb5a92b679bed337fbe13d4eea9da119fc8ed90"
 dependencies = [
  "alleycat-bridge-core",
  "anyhow",
@@ -391,7 +391,7 @@ dependencies = [
 [[package]]
 name = "alleycat-pi-bridge"
 version = "0.1.0"
-source = "git+https://github.com/notcheesex/alleycat.git?rev=6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8#6f00ec4ae7fd6907f8273e67c7bbf6aa6d2c90c8"
+source = "git+https://github.com/notcheesex/alleycat.git?rev=deb5a92b679bed337fbe13d4eea9da119fc8ed90#deb5a92b679bed337fbe13d4eea9da119fc8ed90"
 dependencies = [
  "alleycat-bridge-core",
  "alleycat-codex-proto",
