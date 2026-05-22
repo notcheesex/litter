@@ -265,7 +265,7 @@ struct AlleycatAddServerSheet: View {
 
     private var agentSection: some View {
         let droidModeCapabilities = RustAlleycatBridge.shared.droidModeCapabilities(agents: agents)
-        Section {
+        return Section {
             if isLoadingAgents {
                 HStack {
                     ProgressView().tint(LitterTheme.accent)

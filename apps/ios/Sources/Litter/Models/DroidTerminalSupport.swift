@@ -61,7 +61,7 @@ enum DroidTerminalSupport {
 
     @MainActor
     static func discoverTargets(
-        appModel: AppModel = AppModel.shared,
+        appModel: AppModel,
         alleycat: RustAlleycatBridge = .shared
     ) async -> [DroidTerminalTarget] {
         var targets: [DroidTerminalTarget] = []
