@@ -47,6 +47,8 @@ import com.litter.android.ui.sessions.DirectoryPickerServerOption
 import com.litter.android.ui.sessions.DirectoryPickerSheet
 import com.litter.android.ui.sessions.SessionLaunchSupport
 import com.litter.android.ui.sessions.SessionsUiState
+import com.litter.android.ui.terminal.DroidTerminalSupport
+import com.litter.android.ui.terminal.DroidTerminalTarget
 import com.litter.android.ui.terminal.TerminalScreen
 import uniffi.codex_mobile_client.AppProject
 import uniffi.codex_mobile_client.ApprovalKind
@@ -183,6 +185,21 @@ fun LitterApp(
         // Network discovery
         val networkDiscovery = remember { NetworkDiscovery(appModel.discovery) }
         val voiceController = remember { VoiceRuntimeController.shared }
+        var droidTerminalTargets by remember { mutableStateOf<List<DroidTerminalTarget>>(emptyList()) }
+        val droidDiscoverySignature = remember(snapshot) {
+            snapshot?.servers
+                ?.sortedBy { it.serverId }
+                ?.joinToString(separator = "|") { server ->
+                    val runtimes = server.agentRuntimes
+                        .sortedBy { it.kind }
+                        .joinToString(separator = ",") { "${it.kind}:${it.available}" }
+                    "${server.serverId}:${server.health}:$runtimes"
+                }
+                ?: "no-snapshot"
+        }
+        LaunchedEffect(droidDiscoverySignature) {
+            droidTerminalTargets = DroidTerminalSupport.discoverTargets(context, appModel)
+        }
 
         LaunchedEffect(openPetSettingsRequest) {
             if (openPetSettingsRequest <= 0) return@LaunchedEffect
@@ -298,6 +315,10 @@ fun LitterApp(
         Box(modifier = rootModifier) {
             when (val route = currentRoute) {
                 is Route.Home -> {
+                    val droidTerminalTarget = DroidTerminalSupport.preferredTarget(
+                        targets = droidTerminalTargets,
+                        preferredServerId = selectedProject?.serverId ?: selectedServerId,
+                    )
                     HomeDashboardScreen(
                         onOpenConversation = navigateToConversation,
                         onShowDiscovery = { showDiscovery = true },
@@ -340,6 +361,9 @@ fun LitterApp(
                             { navigate(Route.Terminal()) }
                         } else {
                             null
+                        },
+                        onOpenDroidTerminal = droidTerminalTarget?.let { target ->
+                            { navigate(target.toTerminalRoute()) }
                         },
                     )
                 }
@@ -405,6 +429,10 @@ fun LitterApp(
                 }
 
                 is Route.ServerInfo -> {
+                    val droidTerminalTarget = DroidTerminalSupport.preferredTarget(
+                        targets = droidTerminalTargets.filter { it.serverId == route.serverId },
+                        preferredServerId = route.serverId,
+                    )
                     ConversationInfoScreen(
                         threadKey = null,
                         serverId = route.serverId,
@@ -416,6 +444,9 @@ fun LitterApp(
                             terminalEnabled = ExperimentalFeatures.isEnabled(LitterFeature.TERMINAL),
                             navigate = navigate,
                         ),
+                        onOpenDroidTerminal = droidTerminalTarget?.let { target ->
+                            { navigate(target.toTerminalRoute()) }
+                        },
                     )
                 }
 
@@ -475,6 +506,8 @@ fun LitterApp(
                 is Route.Terminal -> {
                     TerminalScreen(
                         preferredAlleycatNodeId = route.preferredAlleycatNodeId,
+                        preferredDroidPty = route.preferredDroidPty,
+                        preferredDroidPtyAgent = route.preferredDroidPtyAgent,
                         onBack = navigateBack,
                     )
                 }
@@ -681,6 +714,13 @@ fun LitterApp(
         }
     }
 }
+
+private fun DroidTerminalTarget.toTerminalRoute(): Route.Terminal =
+    Route.Terminal(
+        preferredAlleycatNodeId = nodeId,
+        preferredDroidPty = true,
+        preferredDroidPtyAgent = agentName,
+    )
 
 private fun remoteShellLauncher(
     context: android.content.Context,

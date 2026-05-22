@@ -36,6 +36,7 @@ struct HomeDashboardView: View {
     /// hosting navigation when a "Saved Apps" launcher should be exposed.
     var onShowApps: (() -> Void)? = nil
     var onShowTerminal: (() -> Void)? = nil
+    var onShowDroidTerminal: (() -> Void)? = nil
     let onPinThread: (ThreadKey) -> Void
     let onUnpinThread: (ThreadKey) -> Void
     let onHideThread: (ThreadKey) -> Void
@@ -306,6 +307,17 @@ struct HomeDashboardView: View {
                             .foregroundColor(LitterTheme.textSecondary)
                     }
                     .accessibilityLabel("Terminal")
+                }
+                if let onShowDroidTerminal {
+                    Button(action: onShowDroidTerminal) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "terminal")
+                            Text("Droid TUI")
+                                .litterFont(size: 10, weight: .semibold)
+                        }
+                        .foregroundColor(LitterTheme.accent)
+                    }
+                    .accessibilityLabel("Droid TUI terminal")
                 }
             }
         }

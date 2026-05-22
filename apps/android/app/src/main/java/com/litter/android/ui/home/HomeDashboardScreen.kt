@@ -146,6 +146,7 @@ fun HomeDashboardScreen(
     onStartVoice: (() -> Unit)? = null,
     onOpenSavedApp: ((String) -> Unit)? = null,
     onOpenTerminal: (() -> Unit)? = null,
+    onOpenDroidTerminal: (() -> Unit)? = null,
 ) {
     val appModel = LocalAppModel.current
     val context = LocalContext.current
@@ -613,6 +614,31 @@ fun HomeDashboardScreen(
                             contentDescription = "Terminal",
                             tint = LitterTheme.textSecondary,
                             modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+                if (onOpenDroidTerminal != null) {
+                    TextButton(
+                        onClick = onOpenDroidTerminal,
+                        modifier = Modifier.height(32.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            horizontal = 8.dp,
+                            vertical = 0.dp,
+                        ),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Terminal,
+                            contentDescription = null,
+                            tint = LitterTheme.accent,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "Droid TUI",
+                            color = LitterTheme.accent,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
                         )
                     }
                 }

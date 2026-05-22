@@ -11,6 +11,8 @@ import UIKit
 struct TerminalScreen: View {
     let cwd: String?
     var preferredAlleycatNodeId: String? = nil
+    var preferredDroidPty: Bool = false
+    var preferredDroidPtyAgent: String? = nil
 
     @State private var controller = TerminalSessionController()
     @State private var backendOptions: [TerminalBackendOption] = []
@@ -33,7 +35,7 @@ struct TerminalScreen: View {
             terminalSurface
         }
         .background(Color.black.ignoresSafeArea())
-        .navigationTitle("Terminal")
+        .navigationTitle(selectedBackend?.headerTitle ?? (preferredDroidPty ? "Droid TUI Terminal" : "Terminal"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(Color.black, for: .navigationBar)
@@ -48,7 +50,11 @@ struct TerminalScreen: View {
             }
             let options = loadBackendOptions(cwd: cwd)
             backendOptions = options
-            let initial = initialBackend(from: options, cwd: cwd)
+            guard let initial = initialBackend(from: options, cwd: cwd) else {
+                selectedBackendID = nil
+                applyConfigSettings()
+                return
+            }
             selectedBackendID = initial.id
             await controller.open(backend: initial.backend)
             applyConfigSettings()
@@ -83,7 +89,8 @@ struct TerminalScreen: View {
     }
 
     private var selectedBackend: TerminalBackendOption? {
-        backendOptions.first { $0.id == selectedBackendID } ?? backendOptions.first
+        backendOptions.first { $0.id == selectedBackendID }
+            ?? (preferredDroidPty ? backendOptions.first(where: \.isDroidPty) : backendOptions.first)
     }
 
     private var backendBar: some View {
@@ -183,7 +190,7 @@ struct TerminalScreen: View {
                         ghosttyRenderer.clearScreen()
                         nativeRendererHasOutput = false
                     },
-                    onSendToAssistant: sendOutputToAssistant,
+                    onSendToAssistant: selectedBackend?.isDroidPty == true ? nil : sendOutputToAssistant,
                     onFontSizePinched: { newSize in
                         storedFontSize = newSize
                         applyConfigSettings()
@@ -240,6 +247,9 @@ struct TerminalScreen: View {
     private var displayText: String {
         if !controller.output.isEmpty {
             return controller.output
+        }
+        if preferredDroidPty && selectedBackend == nil {
+            return "Droid TUI terminal is unavailable for this host.\nGo back and retry after pairing a host that advertises Droid PTY.\n"
         }
         switch controller.phase {
         case .idle, .connecting:
@@ -314,9 +324,29 @@ struct TerminalScreen: View {
     private func initialBackend(
         from options: [TerminalBackendOption],
         cwd: String?
-    ) -> TerminalBackendOption {
+    ) -> TerminalBackendOption? {
         if let preferredNodeId = normalized(preferredAlleycatNodeId),
-           let match = options.first(where: { $0.alleycatNodeId == preferredNodeId }) {
+           preferredDroidPty,
+           let match = options.first(where: {
+               $0.isDroidPty &&
+                   $0.alleycatNodeId == preferredNodeId &&
+                   normalized($0.droidPtyAgentName) == normalized(preferredDroidPtyAgent)
+           }) {
+            return match
+        }
+        if let preferredNodeId = normalized(preferredAlleycatNodeId),
+           preferredDroidPty,
+           let match = options.first(where: { $0.isDroidPty && $0.alleycatNodeId == preferredNodeId }) {
+            return match
+        }
+        if preferredDroidPty, let match = options.first(where: \.isDroidPty) {
+            return match
+        }
+        if preferredDroidPty {
+            return nil
+        }
+        if let preferredNodeId = normalized(preferredAlleycatNodeId),
+           let match = options.first(where: { $0.alleycatNodeId == preferredNodeId && !$0.isDroidPty }) {
             return match
         }
         return options.first ?? TerminalBackendOption.localIsh(cwd: cwd)
@@ -360,7 +390,9 @@ struct TerminalScreen: View {
     }
 
     private func loadBackendOptions(cwd: String?) -> [TerminalBackendOption] {
-        var options = [TerminalBackendOption.localIsh(cwd: cwd)]
+        var options: [TerminalBackendOption] = preferredDroidPty
+            ? []
+            : [TerminalBackendOption.localIsh(cwd: cwd)]
         var seenNodeIds = Set<String>()
         var seenSshKeys = Set<String>()
         for saved in SavedServerStore.rememberedServers() {
@@ -368,17 +400,32 @@ struct TerminalScreen: View {
                seenNodeIds.insert(nodeId).inserted,
                let token = try? AlleycatCredentialStore.shared.loadToken(nodeId: nodeId),
                !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                options.append(
-                    TerminalBackendOption.remoteAlleycat(
-                        name: saved.name,
-                        nodeId: nodeId,
-                        token: token,
-                        relay: normalized(saved.alleycatRelay)
+                if preferredDroidPty, nodeId == normalized(preferredAlleycatNodeId) {
+                    options.append(
+                        TerminalBackendOption.remoteDroidPty(
+                            name: saved.name,
+                            nodeId: nodeId,
+                            token: token,
+                            relay: normalized(saved.alleycatRelay),
+                            agent: normalized(preferredDroidPtyAgent),
+                            cwd: cwd
+                        )
                     )
-                )
+                }
+                if !preferredDroidPty {
+                    options.append(
+                        TerminalBackendOption.remoteAlleycat(
+                            name: saved.name,
+                            nodeId: nodeId,
+                            token: token,
+                            relay: normalized(saved.alleycatRelay)
+                        )
+                    )
+                }
                 continue
             }
 
+            guard !preferredDroidPty else { continue }
             let host = saved.hostname
             let sshPort = saved.sshPort ?? 22
             let sshKey = "\(host.lowercased()):\(sshPort)"
@@ -515,22 +562,28 @@ private struct TerminalConfigSheet: View {
 private struct TerminalBackendOption: Identifiable, Hashable {
     let id: String
     let title: String
+    let headerTitle: String
     let subtitle: String
     let systemImage: String
     let alleycatNodeId: String?
     let supportsResize: Bool
     let runningLabel: String
+    let isDroidPty: Bool
+    let droidPtyAgentName: String?
     let backend: TerminalBackendKind
 
     static func localIsh(cwd: String?) -> TerminalBackendOption {
         TerminalBackendOption(
             id: "local-ish",
             title: "Local iSH",
+            headerTitle: "Terminal",
             subtitle: cwd?.isEmpty == false ? cwd! : "/root",
             systemImage: "iphone",
             alleycatNodeId: nil,
             supportsResize: true,
             runningLabel: "running",
+            isDroidPty: false,
+            droidPtyAgentName: nil,
             backend: .localIsh(cwd: normalized(cwd))
         )
     }
@@ -544,16 +597,50 @@ private struct TerminalBackendOption: Identifiable, Hashable {
         TerminalBackendOption(
             id: "alleycat-\(nodeId)",
             title: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Remote shell" : name,
+            headerTitle: "Terminal",
             subtitle: shortNodeId(nodeId),
             systemImage: "server.rack",
             alleycatNodeId: nodeId,
             supportsResize: true,
             runningLabel: "remote",
+            isDroidPty: false,
+            droidPtyAgentName: nil,
             backend: .remoteAlleycat(
                 nodeId: nodeId,
                 token: token,
                 relay: relay,
                 shell: nil
+            )
+        )
+    }
+
+    static func remoteDroidPty(
+        name: String,
+        nodeId: String,
+        token: String,
+        relay: String?,
+        agent: String?,
+        cwd: String?
+    ) -> TerminalBackendOption {
+        TerminalBackendOption(
+            id: DroidTerminalSupport.backendId(nodeId: nodeId, agentName: agent),
+            title: DroidTerminalSupport.defaultLabel,
+            headerTitle: "Droid TUI Terminal",
+            subtitle: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? shortNodeId(nodeId)
+                : name,
+            systemImage: "terminal",
+            alleycatNodeId: nodeId,
+            supportsResize: true,
+            runningLabel: "Droid TUI",
+            isDroidPty: true,
+            droidPtyAgentName: normalized(agent),
+            backend: .remoteDroidPty(
+                nodeId: nodeId,
+                token: token,
+                relay: relay,
+                agent: normalized(agent),
+                cwd: normalized(cwd)
             )
         )
     }
@@ -570,11 +657,14 @@ private struct TerminalBackendOption: Identifiable, Hashable {
         return TerminalBackendOption(
             id: "ssh-\(host.lowercased()):\(port)",
             title: title,
+            headerTitle: "Terminal",
             subtitle: "ssh \(username)@\(host):\(port)",
             systemImage: "terminal.fill",
             alleycatNodeId: nil,
             supportsResize: true,
             runningLabel: "ssh",
+            isDroidPty: false,
+            droidPtyAgentName: nil,
             backend: .remoteSsh(
                 host: host,
                 port: port,

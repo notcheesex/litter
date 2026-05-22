@@ -71,6 +71,7 @@ import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.common.AgentIconView
 import com.litter.android.ui.common.BetaBadge
 import com.litter.android.ui.common.isBetaAgentName
+import com.litter.android.ui.terminal.DroidTerminalSupport
 import com.sigkitten.litter.android.BuildConfig
 import java.util.concurrent.Executors
 import kotlinx.coroutines.Dispatchers
@@ -251,6 +252,9 @@ fun AlleycatAddServerSheet(
     val availableAgents = agents.filter { it.available }
     val selectedAgents = agents.filter { it.available && it.name in selectedAgentNames }
     val canConnect = !isConnecting && !isLoadingAgents && parsedParams != null && selectedAgents.isNotEmpty()
+    val droidModeCapabilities = remember(agents) {
+        alleycatBridge.droidModeCapabilities(agents)
+    }
 
     if (showScanner) {
         QrScannerScreen(
@@ -420,6 +424,10 @@ fun AlleycatAddServerSheet(
                     else -> agents.forEach { agent ->
                         AgentRow(
                             agent = agent,
+                            modeLabel = DroidTerminalSupport.modeLabelForAgent(
+                                agent,
+                                droidModeCapabilities,
+                            ),
                             selected = agent.name in selectedAgentNames,
                             onCheckedChange = { checked ->
                                 if (agent.available) {
@@ -469,6 +477,7 @@ fun AlleycatAddServerSheet(
 @Composable
 private fun AgentRow(
     agent: AppAlleycatAgentInfo,
+    modeLabel: String?,
     selected: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
@@ -510,7 +519,7 @@ private fun AgentRow(
                 }
             }
             Text(
-                text = wireLabel(agent.wire),
+                text = modeLabel?.let { "$it · ${wireLabel(agent.wire)}" } ?: wireLabel(agent.wire),
                 color = LitterTheme.textSecondary,
                 fontSize = 11.sp,
             )

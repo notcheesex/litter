@@ -97,6 +97,7 @@ fun ConversationInfoScreen(
     onBack: () -> Unit,
     onChangeWallpaper: () -> Unit,
     onOpenShell: (() -> Unit)? = null,
+    onOpenDroidTerminal: (() -> Unit)? = null,
 ) {
     val appModel = LocalAppModel.current
     val snapshot by appModel.snapshot.collectAsState()
@@ -214,6 +215,13 @@ fun ConversationInfoScreen(
                                 icon = Icons.Outlined.Terminal,
                                 label = "Shell",
                                 onClick = onOpenShell,
+                            )
+                        }
+                        if (onOpenDroidTerminal != null) {
+                            ActionCircleButton(
+                                icon = Icons.Outlined.Terminal,
+                                label = "Droid TUI",
+                                onClick = onOpenDroidTerminal,
                             )
                         }
                     }
