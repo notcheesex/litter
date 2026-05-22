@@ -19,8 +19,11 @@ mod terminal;
 
 pub use crate::ssh_bridge::{AgentAvailabilityStatus, RemoteAgentAvailability, SshBridgeTransport};
 pub use alleycat::{
-    AlleycatBridge, AppAlleycatAgentInfo, AppAlleycatAgentWire, AppAlleycatConnectResult,
-    AppAlleycatPairPayload,
+    AlleycatBridge, AppAgentCapabilities, AppAgentPresentation, AppAgentTerminalCapability,
+    AppAgentTerminalTransport, AppAlleycatAgentInfo, AppAlleycatAgentWire,
+    AppAlleycatConnectResult, AppAlleycatPairPayload, AppDroidJsonNativeCapability,
+    AppDroidModeCapabilities, AppDroidModeKind, AppDroidPtyCapability,
+    AppDroidPtyUnavailableReason,
 };
 pub use app_store::{AppStore, AppStoreSubscription};
 pub use client::AppClient;
@@ -33,10 +36,12 @@ pub use reconnect::ReconnectController;
 pub use remote_path::RemotePath;
 pub use ssh::{AppSshBridgeConnectResult, AppSshConnectionResult, AppSshSessionResult, SshBridge};
 pub use terminal::{
-    TerminalBackendKind, TerminalCellMetrics, TerminalCellRange, TerminalConfig,
-    TerminalCursorStyle, TerminalError, TerminalKeyAction, TerminalKeyCode, TerminalKeyEvent,
+    DroidPtySessionHandle, DroidPtySessionRequest, TerminalBackendKind, TerminalCellMetrics,
+    TerminalCellRange, TerminalConfig, TerminalCursorStyle, TerminalError, TerminalEvent,
+    TerminalEventKind, TerminalEventListener, TerminalKeyAction, TerminalKeyCode, TerminalKeyEvent,
     TerminalKeyMods, TerminalOutputListener, TerminalPalette, TerminalRenderer,
-    TerminalRendererBackend, TerminalSession, TerminalSize, TerminalThemePreset,
+    TerminalRendererBackend, TerminalSession, TerminalSessionId, TerminalSize,
+    TerminalThemePreset,
 };
 
 // Re-export reconnect boundary types so UniFFI can discover them.

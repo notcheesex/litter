@@ -9,7 +9,6 @@ import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AppStore
 import uniffi.codex_mobile_client.TerminalBackendKind
 import uniffi.codex_mobile_client.TerminalOutputListener
-import uniffi.codex_mobile_client.TerminalSession
 import uniffi.codex_mobile_client.TerminalSize
 import uniffi.codex_mobile_client.TerminalSshTrustStore
 
@@ -50,9 +49,6 @@ class TerminalSessionController(
     private var eventGeneration: Int = 0
     private var terminalCols: UShort = 80u
     private var terminalRows: UShort = 24u
-
-    private fun activeSession(): TerminalSession? =
-        sessionId?.let { appStore.terminalSessionHandle(it) }
 
     val canSendInput: Boolean
         get() = phase == Phase.RUNNING
@@ -147,11 +143,11 @@ class TerminalSessionController(
 
     fun sendBytes(bytes: ByteArray) {
         if (bytes.isEmpty()) return
-        val activeSession = activeSession() ?: return
+        val id = sessionId ?: return
         if (!canSendInput) return
         scope.launch {
             try {
-                activeSession.writeInput(bytes)
+                appStore.writeToTerminalSession(id, bytes)
             } catch (error: Exception) {
                 errorMessage = error.message ?: "Unable to write terminal input"
                 phase = Phase.FAILED
@@ -200,12 +196,12 @@ class TerminalSessionController(
         if (cols <= 0 || rows <= 0) return
         terminalCols = cols.coerceIn(1, UShort.MAX_VALUE.toInt()).toUShort()
         terminalRows = rows.coerceIn(1, UShort.MAX_VALUE.toInt()).toUShort()
-        val activeSession = activeSession() ?: return
+        val id = sessionId ?: return
         if (!notifyBackend || !canSendInput) return
         val size = TerminalSize(cols = terminalCols, rows = terminalRows)
         scope.launch {
             try {
-                activeSession.resize(size)
+                appStore.resizeTerminalSession(id, size)
             } catch (error: Exception) {
                 errorMessage = error.message ?: "Unable to resize terminal"
                 phase = Phase.FAILED

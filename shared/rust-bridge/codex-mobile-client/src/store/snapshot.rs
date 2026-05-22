@@ -333,6 +333,7 @@ pub enum AppTerminalSessionPhase {
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct TerminalSessionSnapshot {
     pub id: String,
+    pub session_id: crate::terminal::TerminalSessionId,
     pub backend_kind: crate::terminal::TerminalBackendKind,
     pub phase: AppTerminalSessionPhase,
     pub cols: u16,

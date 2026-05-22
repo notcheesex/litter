@@ -18,6 +18,7 @@ use crate::ffi::alleycat::{AppAgentCapabilities, AppAgentPresentation};
 pub struct AppAgentMetadata {
     pub name: String,
     pub display_name: String,
+    pub unavailable_reason: Option<String>,
     pub presentation: Option<AppAgentPresentation>,
     pub capabilities: Option<AppAgentCapabilities>,
 }
@@ -98,6 +99,7 @@ mod tests {
         AppAgentMetadata {
             name: name.to_owned(),
             display_name: name.to_owned(),
+            unavailable_reason: None,
             presentation: Some(AppAgentPresentation {
                 title: None,
                 is_beta: false,

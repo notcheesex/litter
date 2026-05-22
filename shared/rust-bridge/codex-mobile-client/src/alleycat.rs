@@ -36,6 +36,10 @@ pub struct AgentInfo {
     pub display_name: String,
     pub wire: AgentWire,
     pub available: bool,
+    /// Host-supplied unavailable reason, when `available == false`.
+    /// This is advisory text for UI/error presentation only; clients must
+    /// make PTY-vs-JSON decisions from typed wire/capability fields.
+    pub unavailable_reason: Option<String>,
     /// UI-facing hints from the alleycat host (label/sort/beta/aliases).
     /// `None` means the host is older or doesn't ship rich metadata; the
     /// client falls back to generic rendering.
@@ -382,6 +386,13 @@ struct AgentInfoWire {
     display_name: String,
     wire: AgentWireWire,
     available: bool,
+    #[serde(
+        default,
+        alias = "unavailableReason",
+        alias = "availability_reason",
+        alias = "reason"
+    )]
+    unavailable_reason: Option<String>,
     #[serde(default)]
     presentation: Option<AgentPresentationWire>,
     #[serde(default)]
@@ -571,6 +582,7 @@ pub async fn list_agents(
             display_name: agent.display_name,
             wire: agent.wire.into(),
             available: agent.available,
+            unavailable_reason: normalize_optional_text(agent.unavailable_reason),
             presentation: agent.presentation.map(Into::into),
             capabilities: agent.capabilities.map(Into::into),
         })
@@ -903,6 +915,12 @@ fn validate_response(response: &Response) -> Result<(), AlleycatError> {
         ));
     }
     Ok(())
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 impl From<AgentWireWire> for AgentWire {

@@ -689,6 +689,19 @@ fn alleycat_requested_runtime_kinds(
         .collect()
 }
 
+fn app_server_runtime_kind_for_alleycat_agent(
+    agent: &AlleycatAgentInfo,
+) -> Option<AgentRuntimeKind> {
+    if matches!(agent.wire, AlleycatAgentWire::Terminal) || !agent.available {
+        return None;
+    }
+    let runtime_kind = crate::alleycat::agent_runtime_kind(&agent.name, &agent.display_name)?;
+    if runtime_kind == "droid-terminal" {
+        return None;
+    }
+    Some(runtime_kind)
+}
+
 impl MobileClient {
     /// Create a new `MobileClient`.
     pub fn new() -> Self {
@@ -1694,6 +1707,7 @@ impl MobileClient {
             .upsert_all(agents.iter().map(|agent| crate::store::AppAgentMetadata {
                 name: agent.name.clone(),
                 display_name: agent.display_name.clone(),
+                unavailable_reason: agent.unavailable_reason.clone(),
                 presentation: agent.presentation.clone().map(Into::into),
                 capabilities: agent.capabilities.clone().map(Into::into),
             }));
@@ -1744,15 +1758,11 @@ impl MobileClient {
                 if !selected_agent_names.is_empty() && !selected_agent_names.contains(&agent.name) {
                     return None;
                 }
-                if matches!(agent.wire, AlleycatAgentWire::Terminal) {
-                    return None;
-                }
-                let runtime_kind =
-                    crate::alleycat::agent_runtime_kind(&agent.name, &agent.display_name)?;
+                let runtime_kind = app_server_runtime_kind_for_alleycat_agent(&agent)?;
                 if !seen_runtime_kinds.insert(runtime_kind.clone()) {
                     return None;
                 }
-                (agent.available).then_some((runtime_kind, agent))
+                Some((runtime_kind, agent))
             })
             .collect::<Vec<_>>();
         let runtime_agents = if requested_agents.is_empty() {
@@ -1771,6 +1781,7 @@ impl MobileClient {
                     display_name: display_name.clone(),
                     wire,
                     available: true,
+                    unavailable_reason: None,
                     presentation: None,
                     capabilities: None,
                 },
@@ -3671,15 +3682,15 @@ impl MobileClient {
         size: crate::terminal::TerminalSize,
         trust_store: Option<Arc<crate::terminal::TerminalSshTrustStore>>,
     ) -> Result<String, crate::terminal::TerminalError> {
-        let session = match trust_store {
-            Some(store) => {
-                crate::terminal::TerminalSession::open_with_trust_store(kind.clone(), size, store)
-                    .await?
-            }
-            None => crate::terminal::TerminalSession::open(kind.clone(), size).await?,
-        };
+        let id = crate::terminal::new_terminal_session_id();
+        let session = crate::terminal::TerminalSession::open_managed(
+            kind.clone(),
+            size,
+            trust_store,
+            Some(id.clone()),
+        )
+        .await?;
         let session = Arc::new(session);
-        let id = uuid::Uuid::new_v4().to_string();
         self.terminal_sessions
             .lock()
             .expect("terminal_sessions poisoned")
@@ -3702,6 +3713,53 @@ impl MobileClient {
         Ok(id)
     }
 
+    /// Write bytes to a specific terminal session. Unlike
+    /// `write_to_active_terminal`, this is session-scoped and never
+    /// routes through chat/thread state.
+    pub async fn write_to_terminal_session(
+        &self,
+        id: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        if bytes.is_empty() {
+            return Err(crate::terminal::TerminalError::InvalidInput {
+                detail: "terminal input must not be empty".to_string(),
+            });
+        }
+        let Some(session) = self.terminal_session_handle(id) else {
+            return Err(crate::terminal::TerminalError::UnknownSession {
+                session_id: id.to_string(),
+            });
+        };
+        session.write_input(bytes).await
+    }
+
+    /// Send Ctrl+C to a specific terminal session. PTY/TUI cancel is a
+    /// terminal byte operation and must not be translated into chat cancel.
+    pub async fn interrupt_terminal_session(
+        &self,
+        id: &str,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        self.write_to_terminal_session(id, vec![0x03]).await
+    }
+
+    /// Resize a specific terminal session and update the Rust-owned
+    /// terminal snapshot only after the backend accepted the resize.
+    pub async fn resize_terminal_session(
+        &self,
+        id: &str,
+        size: crate::terminal::TerminalSize,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        let Some(session) = self.terminal_session_handle(id) else {
+            return Err(crate::terminal::TerminalError::UnknownSession {
+                session_id: id.to_string(),
+            });
+        };
+        session.resize(size).await?;
+        self.app_store.update_terminal_size(id, size.cols, size.rows);
+        Ok(())
+    }
+
     /// Close a terminal session: drop the strong handle (which kills the
     /// underlying backend on the last reference being released), then
     /// mark the snapshot as exited. The snapshot's output_tail is
@@ -3717,6 +3775,10 @@ impl MobileClient {
             .remove(id);
         if let Some(session) = session {
             session.close_session().await?;
+        } else if self.app_store.terminal_session_snapshot(id).is_none() {
+            return Err(crate::terminal::TerminalError::UnknownSession {
+                session_id: id.to_string(),
+            });
         }
         self.app_store.mark_terminal_exited(id, 0);
         Ok(())
@@ -3754,10 +3816,10 @@ impl MobileClient {
         let Some(id) = active_id else {
             return Ok(false);
         };
-        let Some(session) = self.terminal_session_handle(&id) else {
+        if self.terminal_session_handle(&id).is_none() {
             return Ok(false);
-        };
-        session.write_input(bytes).await?;
+        }
+        self.write_to_terminal_session(&id, bytes).await?;
         Ok(true)
     }
 

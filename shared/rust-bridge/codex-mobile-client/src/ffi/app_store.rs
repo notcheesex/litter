@@ -448,11 +448,37 @@ impl AppStore {
         &self,
         kind: crate::terminal::TerminalBackendKind,
         size: crate::terminal::TerminalSize,
-    ) -> Result<String, ClientError> {
+    ) -> Result<String, crate::terminal::TerminalError> {
         self.inner
             .open_terminal_session(kind, size, None)
             .await
-            .map_err(|e| ClientError::Rpc(e.to_string()))
+    }
+
+    /// Dedicated Droid PTY/TUI launch API. This exists in addition to
+    /// generic terminal sessions so platforms can select Droid terminal
+    /// mode explicitly without overloading chat/thread start requests.
+    pub async fn open_droid_pty_session(
+        &self,
+        request: crate::terminal::DroidPtySessionRequest,
+        size: crate::terminal::TerminalSize,
+    ) -> Result<crate::terminal::DroidPtySessionHandle, crate::terminal::TerminalError> {
+        let id = self
+            .inner
+            .open_terminal_session(
+                crate::terminal::TerminalBackendKind::RemoteDroidPty {
+                    node_id: request.node_id,
+                    token: request.token,
+                    relay: request.relay,
+                    agent: request.agent,
+                    cwd: request.cwd,
+                },
+                size,
+                None,
+            )
+            .await?;
+        Ok(crate::terminal::DroidPtySessionHandle {
+            session_id: crate::terminal::TerminalSessionId { value: id },
+        })
     }
 
     /// Same as [`Self::open_terminal_session`] but consults `trust_store`
@@ -463,11 +489,62 @@ impl AppStore {
         kind: crate::terminal::TerminalBackendKind,
         size: crate::terminal::TerminalSize,
         trust_store: Arc<crate::terminal::TerminalSshTrustStore>,
-    ) -> Result<String, ClientError> {
+    ) -> Result<String, crate::terminal::TerminalError> {
         self.inner
             .open_terminal_session(kind, size, Some(trust_store))
             .await
-            .map_err(|e| ClientError::Rpc(e.to_string()))
+    }
+
+    /// Write raw bytes to the addressed terminal session. Input is
+    /// routed by terminal session id only and never through chat/thread
+    /// composer logic.
+    pub async fn write_to_terminal_session(
+        &self,
+        id: String,
+        data: Vec<u8>,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        self.inner.write_to_terminal_session(&id, data).await
+    }
+
+    pub async fn write_droid_pty_input(
+        &self,
+        handle: crate::terminal::DroidPtySessionHandle,
+        data: Vec<u8>,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        let id = droid_pty_session_id(&self.inner, handle)?;
+        self.inner.write_to_terminal_session(&id, data).await
+    }
+
+    pub async fn interrupt_terminal_session(
+        &self,
+        id: String,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        self.inner.interrupt_terminal_session(&id).await
+    }
+
+    pub async fn interrupt_droid_pty_session(
+        &self,
+        handle: crate::terminal::DroidPtySessionHandle,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        let id = droid_pty_session_id(&self.inner, handle)?;
+        self.inner.interrupt_terminal_session(&id).await
+    }
+
+    pub async fn resize_terminal_session(
+        &self,
+        id: String,
+        size: crate::terminal::TerminalSize,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        self.inner.resize_terminal_session(&id, size).await
+    }
+
+    pub async fn resize_droid_pty_session(
+        &self,
+        handle: crate::terminal::DroidPtySessionHandle,
+        size: crate::terminal::TerminalSize,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        let id = droid_pty_session_id(&self.inner, handle)?;
+        self.inner.resize_terminal_session(&id, size).await
     }
 
     /// Close a terminal session by id. Drops the live handle (the
@@ -475,11 +552,19 @@ impl AppStore {
     /// and marks the snapshot exited. The snapshot is kept (so the UI
     /// can render the exit code); call `forget_terminal_session` to
     /// fully remove the record.
-    pub async fn close_terminal_session(&self, id: String) -> Result<(), ClientError> {
-        self.inner
-            .close_terminal_session(&id)
-            .await
-            .map_err(|e| ClientError::Rpc(e.to_string()))
+    pub async fn close_terminal_session(
+        &self,
+        id: String,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        self.inner.close_terminal_session(&id).await
+    }
+
+    pub async fn close_droid_pty_session(
+        &self,
+        handle: crate::terminal::DroidPtySessionHandle,
+    ) -> Result<(), crate::terminal::TerminalError> {
+        let id = droid_pty_session_id(&self.inner, handle)?;
+        self.inner.close_terminal_session(&id).await
     }
 
     /// Remove the snapshot entry for `id`, releasing the output_tail.
@@ -509,11 +594,8 @@ impl AppStore {
     pub async fn write_to_active_terminal(
         &self,
         bytes: Vec<u8>,
-    ) -> Result<bool, ClientError> {
-        self.inner
-            .write_to_active_terminal(bytes)
-            .await
-            .map_err(|e| ClientError::Rpc(e.to_string()))
+    ) -> Result<bool, crate::terminal::TerminalError> {
+        self.inner.write_to_active_terminal(bytes).await
     }
 
     /// Return the currently-focused terminal session id, if any.
@@ -524,6 +606,26 @@ impl AppStore {
     /// Set the focused terminal session id. Pass `None` to clear focus.
     pub fn set_active_terminal_id(&self, id: Option<String>) {
         self.inner.app_store.set_active_terminal_id(id);
+    }
+}
+
+fn droid_pty_session_id(
+    client: &MobileClient,
+    handle: crate::terminal::DroidPtySessionHandle,
+) -> Result<String, crate::terminal::TerminalError> {
+    let id = handle.session_id.value;
+    let Some(snapshot) = client.app_store.terminal_session_snapshot(&id) else {
+        return Err(crate::terminal::TerminalError::UnknownSession { session_id: id });
+    };
+    if matches!(
+        snapshot.backend_kind,
+        crate::terminal::TerminalBackendKind::RemoteDroidPty { .. }
+    ) {
+        Ok(id)
+    } else {
+        Err(crate::terminal::TerminalError::Unsupported {
+            detail: "terminal session is not a Droid PTY session".to_string(),
+        })
     }
 }
 

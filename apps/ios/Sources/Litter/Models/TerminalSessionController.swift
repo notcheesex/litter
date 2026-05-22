@@ -115,9 +115,8 @@ final class TerminalSessionController {
 
     func send(_ data: Data) async {
         guard let id = sessionId, canSendInput else { return }
-        guard let session = appStore.terminalSessionHandle(id: id) else { return }
         do {
-            try await session.writeInput(data: data)
+            try await appStore.writeToTerminalSession(id: id, data: data)
         } catch {
             phase = .failed(error.localizedDescription)
         }
@@ -175,9 +174,8 @@ final class TerminalSessionController {
         let size = TerminalSize(cols: cols, rows: rows)
         terminalSize = size
         guard notifyBackend, let id = sessionId, canSendInput else { return }
-        guard let session = appStore.terminalSessionHandle(id: id) else { return }
         do {
-            try await session.resize(size: size)
+            try await appStore.resizeTerminalSession(id: id, size: size)
         } catch {
             phase = .failed(error.localizedDescription)
         }

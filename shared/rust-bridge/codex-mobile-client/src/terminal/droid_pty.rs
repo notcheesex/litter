@@ -38,8 +38,10 @@ pub(crate) async fn open(
     let (stream, session) =
         crate::alleycat::connect_terminal_agent_stream(&endpoint, params, agent)
             .await
-            .map_err(|error| TerminalError::Backend {
-                detail: format!("connecting Droid PTY terminal bridge: {error}"),
+            .map_err(|error| TerminalError::Unavailable {
+                detail: sanitize_terminal_detail(format!(
+                    "connecting Droid PTY terminal bridge: {error}"
+                )),
             })?;
     let (backend, output_rx) = open_over_stream(stream, Some(session), cwd, size).await?;
     Ok((backend, output_rx))
@@ -69,7 +71,7 @@ where
     .await?;
     let frame = read_frame(&mut reader).await?;
     if frame.kind != TerminalFrameKind::Hello {
-        return Err(TerminalError::Backend {
+        return Err(TerminalError::Protocol {
             detail: "Droid PTY terminal peer did not negotiate terminal protocol".to_string(),
         });
     }
@@ -77,7 +79,7 @@ where
     if hello.min_version > TERMINAL_PROTOCOL_VERSION
         || hello.max_version < TERMINAL_PROTOCOL_VERSION
     {
-        return Err(TerminalError::Backend {
+        return Err(TerminalError::Protocol {
             detail: "Droid PTY terminal protocol version is unsupported".to_string(),
         });
     }
@@ -250,15 +252,49 @@ struct ErrorPayload {
 }
 
 fn encode_json<T: Serialize>(value: &T) -> Result<Vec<u8>, TerminalError> {
-    serde_json::to_vec(value).map_err(|error| TerminalError::Backend {
+    serde_json::to_vec(value).map_err(|error| TerminalError::Protocol {
         detail: format!("encoding Droid PTY terminal payload: {error}"),
     })
 }
 
 fn decode_json<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, TerminalError> {
-    serde_json::from_slice(payload).map_err(|error| TerminalError::Backend {
+    serde_json::from_slice(payload).map_err(|error| TerminalError::Protocol {
         detail: format!("decoding Droid PTY terminal payload: {error}"),
     })
+}
+
+fn transport_error(action: &str, error: impl std::fmt::Display) -> TerminalError {
+    TerminalError::TransportDisconnected {
+        detail: sanitize_terminal_detail(format!("{action}: {error}")),
+    }
+}
+
+fn protocol_error(detail: impl Into<String>) -> TerminalError {
+    TerminalError::Protocol {
+        detail: sanitize_terminal_detail(detail.into()),
+    }
+}
+
+fn sanitize_terminal_detail(detail: String) -> String {
+    let lower = detail.to_ascii_lowercase();
+    let sensitive_markers = [
+        "authorization",
+        "bearer ",
+        "token",
+        "secret",
+        "api_key",
+        "apikey",
+        "password",
+        "credential",
+    ];
+    if sensitive_markers
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        "[redacted Droid PTY terminal error containing sensitive data]".to_string()
+    } else {
+        detail
+    }
 }
 
 async fn read_frame<R>(reader: &mut R) -> Result<TerminalFrame, TerminalError>
@@ -269,61 +305,46 @@ where
     reader
         .read_exact(&mut magic)
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("reading Droid PTY terminal magic: {error}"),
-        })?;
+        .map_err(|error| transport_error("reading Droid PTY terminal magic", error))?;
     if &magic != MAGIC {
-        return Err(TerminalError::Backend {
-            detail: format!(
-                "unsupported Droid PTY terminal peer: invalid magic {:02x}{:02x}{:02x}{:02x}",
-                magic[0], magic[1], magic[2], magic[3]
-            ),
-        });
+        return Err(protocol_error(format!(
+            "unsupported Droid PTY terminal peer: invalid magic {:02x}{:02x}{:02x}{:02x}",
+            magic[0], magic[1], magic[2], magic[3]
+        )));
     }
     let version = reader
         .read_u16()
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("reading Droid PTY terminal version: {error}"),
-        })?;
+        .map_err(|error| transport_error("reading Droid PTY terminal version", error))?;
     if version != TERMINAL_PROTOCOL_VERSION {
-        return Err(TerminalError::Backend {
-            detail: format!("unsupported Droid PTY terminal protocol version {version}"),
-        });
+        return Err(protocol_error(format!(
+            "unsupported Droid PTY terminal protocol version {version}"
+        )));
     }
     let kind = reader
         .read_u8()
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("reading Droid PTY terminal frame kind: {error}"),
-        })?;
+        .map_err(|error| transport_error("reading Droid PTY terminal frame kind", error))?;
     let _flags = reader
         .read_u8()
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("reading Droid PTY terminal frame flags: {error}"),
-        })?;
+        .map_err(|error| transport_error("reading Droid PTY terminal frame flags", error))?;
     let len = reader
         .read_u32()
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("reading Droid PTY terminal frame length: {error}"),
-        })?;
+        .map_err(|error| transport_error("reading Droid PTY terminal frame length", error))?;
     if len as usize > MAX_FRAME_BYTES {
-        return Err(TerminalError::Backend {
-            detail: format!("Droid PTY terminal frame too large: {len} bytes"),
-        });
+        return Err(protocol_error(format!(
+            "Droid PTY terminal frame too large: {len} bytes"
+        )));
     }
-    let kind = TerminalFrameKind::from_u8(kind).ok_or_else(|| TerminalError::Backend {
-        detail: "unknown Droid PTY terminal frame kind".to_string(),
-    })?;
+    let kind = TerminalFrameKind::from_u8(kind)
+        .ok_or_else(|| protocol_error("unknown Droid PTY terminal frame kind"))?;
     let mut payload = vec![0u8; len as usize];
     reader
         .read_exact(&mut payload)
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("reading Droid PTY terminal frame payload: {error}"),
-        })?;
+        .map_err(|error| transport_error("reading Droid PTY terminal frame payload", error))?;
     Ok(TerminalFrame { kind, payload })
 }
 
@@ -332,52 +353,39 @@ where
     W: AsyncWrite + Unpin,
 {
     if frame.payload.len() > MAX_FRAME_BYTES {
-        return Err(TerminalError::Backend {
-            detail: format!(
-                "Droid PTY terminal frame too large: {} bytes",
-                frame.payload.len()
-            ),
-        });
+        return Err(protocol_error(format!(
+            "Droid PTY terminal frame too large: {} bytes",
+            frame.payload.len()
+        )));
     }
     writer
         .write_all(MAGIC)
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("writing Droid PTY terminal magic: {error}"),
-        })?;
+        .map_err(|error| transport_error("writing Droid PTY terminal magic", error))?;
     writer
         .write_u16(TERMINAL_PROTOCOL_VERSION)
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("writing Droid PTY terminal version: {error}"),
-        })?;
+        .map_err(|error| transport_error("writing Droid PTY terminal version", error))?;
     writer
         .write_u8(frame.kind as u8)
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("writing Droid PTY terminal frame kind: {error}"),
-        })?;
+        .map_err(|error| transport_error("writing Droid PTY terminal frame kind", error))?;
     writer
         .write_u8(0)
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("writing Droid PTY terminal frame flags: {error}"),
-        })?;
+        .map_err(|error| transport_error("writing Droid PTY terminal frame flags", error))?;
     writer
         .write_u32(frame.payload.len() as u32)
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("writing Droid PTY terminal frame length: {error}"),
-        })?;
+        .map_err(|error| transport_error("writing Droid PTY terminal frame length", error))?;
     writer
         .write_all(&frame.payload)
         .await
-        .map_err(|error| TerminalError::Backend {
-            detail: format!("writing Droid PTY terminal frame payload: {error}"),
-        })?;
-    writer.flush().await.map_err(|error| TerminalError::Backend {
-        detail: format!("flushing Droid PTY terminal frame: {error}"),
-    })
+        .map_err(|error| transport_error("writing Droid PTY terminal frame payload", error))?;
+    writer
+        .flush()
+        .await
+        .map_err(|error| transport_error("flushing Droid PTY terminal frame", error))
 }
 
 fn resize_payload(size: TerminalSize) -> [u8; 4] {
