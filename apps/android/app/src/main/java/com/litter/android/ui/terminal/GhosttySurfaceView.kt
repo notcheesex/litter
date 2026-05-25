@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.net.Uri
 import android.os.Looper
 import android.os.SystemClock
+import android.text.InputType
 import android.view.Choreographer
 import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
@@ -448,7 +449,12 @@ private class GhosttyAndroidSurfaceView(
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        outAttrs.inputType = EditorInfo.TYPE_NULL
+        outAttrs.inputType = (
+            InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        )
         outAttrs.imeOptions = (
             EditorInfo.IME_FLAG_NO_EXTRACT_UI or
                 EditorInfo.IME_FLAG_NO_FULLSCREEN or
@@ -802,7 +808,11 @@ private class GhosttyInputConnection(
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val payload = text?.toString().orEmpty()
         if (payload.isNotEmpty()) {
-            renderer()?.sendText(payload)
+            if (payload == "\n" || payload == "\r") {
+                sendEnter()
+            } else {
+                renderer()?.sendText(payload)
+            }
         }
         return true
     }
@@ -835,6 +845,21 @@ private class GhosttyInputConnection(
     override fun sendKeyEvent(event: KeyEvent?): Boolean {
         val real = event ?: return false
         return view.sendKeyEventToGhostty(real)
+    }
+
+    override fun performEditorAction(actionCode: Int): Boolean {
+        sendEnter()
+        return true
+    }
+
+    private fun sendEnter() {
+        renderer()?.sendKey(
+            action = 1,
+            key = 1, // LitterBridgeKey::Enter
+            mods = 0,
+            text = null,
+            composing = false,
+        )
     }
 }
 

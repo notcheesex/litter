@@ -1,7 +1,8 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::{Mutex, mpsc};
@@ -30,20 +31,23 @@ pub(crate) async fn open(
     let params = crate::alleycat::ParsedPairPayload {
         version: crate::alleycat::ALLEYCAT_PROTOCOL_VERSION,
         node_id,
-        token,
+        token: token.clone(),
         relay,
         host_name: None,
     };
+    let redaction_secrets = vec![token];
     let agent = agent.unwrap_or_else(|| "droid-pty".to_string());
     let (stream, session) =
         crate::alleycat::connect_terminal_agent_stream(&endpoint, params, agent)
             .await
             .map_err(|error| TerminalError::Unavailable {
-                detail: sanitize_terminal_detail(format!(
-                    "connecting Droid PTY terminal bridge: {error}"
-                )),
+                detail: sanitize_terminal_detail_with_secrets(
+                    format!("connecting Droid PTY terminal bridge: {error}"),
+                    &redaction_secrets,
+                ),
             })?;
-    let (backend, output_rx) = open_over_stream(stream, Some(session), cwd, size).await?;
+    let (backend, output_rx) =
+        open_over_stream(stream, Some(session), cwd, size, redaction_secrets).await?;
     Ok((backend, output_rx))
 }
 
@@ -52,6 +56,7 @@ async fn open_over_stream<S>(
     session: Option<Arc<crate::alleycat::AlleycatSession>>,
     cwd: Option<String>,
     size: TerminalSize,
+    redaction_secrets: Vec<String>,
 ) -> Result<OpenBackendResult, TerminalError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -97,7 +102,7 @@ where
     .await?;
 
     let (output_tx, output_rx) = mpsc::channel(256);
-    tokio::spawn(read_output_loop(reader, output_tx));
+    tokio::spawn(read_output_loop(reader, output_tx, redaction_secrets));
     let backend = Arc::new(RemoteDroidPtyBackend {
         writer: Mutex::new(writer),
         session,
@@ -151,14 +156,25 @@ where
     }
 }
 
-async fn read_output_loop<R>(mut reader: ReadHalf<R>, output_tx: mpsc::Sender<TerminalBackendEvent>)
+async fn read_output_loop<R>(
+    mut reader: ReadHalf<R>,
+    output_tx: mpsc::Sender<TerminalBackendEvent>,
+    redaction_secrets: Vec<String>,
+)
 where
     R: AsyncRead + Unpin,
 {
     loop {
         let frame = match read_frame(&mut reader).await {
             Ok(frame) => frame,
-            Err(_) => {
+            Err(error) => {
+                let _ = output_tx
+                    .send(TerminalBackendEvent::Bytes(format_terminal_failure(
+                        "Droid PTY terminal disconnected",
+                        &error.to_string(),
+                        &redaction_secrets,
+                    )))
+                    .await;
                 let _ = output_tx.send(TerminalBackendEvent::Exit(-1)).await;
                 break;
             }
@@ -179,6 +195,14 @@ where
                 break;
             }
             TerminalFrameKind::Error => {
+                let detail = decode_error_detail(&frame.payload, &redaction_secrets);
+                let _ = output_tx
+                    .send(TerminalBackendEvent::Bytes(format_terminal_failure(
+                        "Droid PTY terminal error",
+                        &detail,
+                        &redaction_secrets,
+                    )))
+                    .await;
                 let _ = output_tx.send(TerminalBackendEvent::Exit(-1)).await;
                 break;
             }
@@ -276,6 +300,13 @@ fn protocol_error(detail: impl Into<String>) -> TerminalError {
 }
 
 fn sanitize_terminal_detail(detail: String) -> String {
+    sanitize_terminal_detail_with_secrets(detail, &[])
+}
+
+fn sanitize_terminal_detail_with_secrets(detail: String, secrets: &[String]) -> String {
+    let detail_without_sequences = strip_terminal_sequences(&detail);
+    let detail = strip_terminal_controls(&detail_without_sequences);
+    let compact_detail = compact_terminal_detail(&detail_without_sequences);
     let lower = detail.to_ascii_lowercase();
     let sensitive_markers = [
         "authorization",
@@ -290,11 +321,128 @@ fn sanitize_terminal_detail(detail: String) -> String {
     if sensitive_markers
         .iter()
         .any(|marker| lower.contains(marker))
+        || sensitive_terminal_patterns()
+            .iter()
+            .any(|pattern| pattern.is_match(&detail) || pattern.is_match(&compact_detail))
+        || contains_known_secret(&detail, &compact_detail, secrets)
     {
         "[redacted Droid PTY terminal error containing sensitive data]".to_string()
     } else {
         detail
     }
+}
+
+fn sensitive_terminal_patterns() -> &'static [Regex] {
+    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    PATTERNS
+        .get_or_init(|| {
+            [
+                r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{12,}",
+                r"(?i)sk-[A-Za-z0-9_-]{16,}",
+                r"(?i)gh[opsu]_[A-Za-z0-9_]{20,}",
+                r"(?i)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+                r"(?i)-----BEGIN [^-]*PRIVATE KEY-----",
+                r"[A-Za-z0-9_+/=-]{40,}",
+            ]
+            .into_iter()
+            .map(|pattern| Regex::new(pattern).expect("valid terminal redaction regex"))
+            .collect()
+        })
+        .as_slice()
+}
+
+fn contains_known_secret(detail: &str, compact_detail: &str, secrets: &[String]) -> bool {
+    secrets
+        .iter()
+        .filter_map(|secret| {
+            let compact = compact_terminal_detail(secret);
+            (compact.len() >= 4).then_some(compact)
+        })
+        .any(|secret| detail.contains(&secret) || compact_detail.contains(&secret))
+}
+
+fn strip_terminal_sequences(detail: &str) -> String {
+    let mut out = String::with_capacity(detail.len());
+    let mut chars = detail.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                chars.next();
+                let mut previous_escape = false;
+                for next in chars.by_ref() {
+                    if next == '\u{7}' || (previous_escape && next == '\\') {
+                        break;
+                    }
+                    previous_escape = next == '\u{1b}';
+                }
+            }
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+fn strip_terminal_controls(detail: &str) -> String {
+    detail
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || ch == '\u{7f}' {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn compact_terminal_detail(detail: &str) -> String {
+    strip_terminal_sequences(detail)
+        .chars()
+        .filter(|ch| !ch.is_control() && *ch != '\u{7f}' && !ch.is_whitespace())
+        .collect()
+}
+
+fn decode_error_detail(payload: &[u8], redaction_secrets: &[String]) -> String {
+    match decode_json::<ErrorPayload>(payload) {
+        Ok(error) => {
+            let code = error.code.trim();
+            let message = error.message.trim();
+            let detail = match (code.is_empty(), message.is_empty()) {
+                (true, true) => "remote Droid PTY failed without details".to_string(),
+                (true, false) => message.to_string(),
+                (false, true) => code.to_string(),
+                (false, false) => format!("{code}: {message}"),
+            };
+            sanitize_terminal_detail_with_secrets(detail, redaction_secrets)
+        }
+        Err(error) => sanitize_terminal_detail_with_secrets(
+            format!("remote Droid PTY sent an unreadable error payload: {error}"),
+            redaction_secrets,
+        ),
+    }
+}
+
+fn format_terminal_failure(title: &str, detail: &str, redaction_secrets: &[String]) -> Vec<u8> {
+    let detail = sanitize_terminal_detail_with_secrets(detail.to_string(), redaction_secrets);
+    format!("\r\n[{title}: {detail}]\r\n").into_bytes()
 }
 
 async fn read_frame<R>(reader: &mut R) -> Result<TerminalFrame, TerminalError>
@@ -414,6 +562,7 @@ mod tests {
             None,
             Some("/tmp/droid".to_string()),
             TerminalSize { cols: 101, rows: 37 },
+            Vec::new(),
         )
         .await
         .expect("open fake terminal");
@@ -450,8 +599,14 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let error = match open_over_stream(client, None, None, TerminalSize { cols: 80, rows: 24 })
-            .await
+        let error = match open_over_stream(
+            client,
+            None,
+            None,
+            TerminalSize { cols: 80, rows: 24 },
+            Vec::new(),
+        )
+        .await
         {
             Ok(_) => panic!("old JSONL peer should be rejected"),
             Err(error) => error.to_string(),
@@ -459,6 +614,74 @@ mod tests {
         server_task.await.unwrap();
         assert!(error.contains("unsupported Droid PTY terminal peer"));
         assert!(!error.contains("terminal-secret-fixture"));
+    }
+
+    #[tokio::test]
+    async fn error_frames_are_rendered_as_redacted_terminal_output() {
+        let (client, server) = duplex(64 * 1024);
+        let server_task = tokio::spawn(fake_error_peer(server));
+        let (_backend, mut output_rx) = open_over_stream(
+            client,
+            None,
+            None,
+            TerminalSize { cols: 80, rows: 24 },
+            Vec::new(),
+        )
+        .await
+        .expect("open fake terminal");
+
+        let output = output_rx.recv().await.expect("error output");
+        let TerminalBackendEvent::Bytes(output) = output else {
+            panic!("expected terminal error output");
+        };
+        let text = String::from_utf8(output).expect("utf8 error output");
+        assert!(text.contains("Droid PTY terminal error"));
+        assert!(text.contains("[redacted Droid PTY terminal error containing sensitive data]"));
+        assert!(!text.contains("factory-token-fixture"));
+
+        assert_eq!(
+            output_rx.recv().await,
+            Some(TerminalBackendEvent::Exit(-1))
+        );
+        server_task.await.unwrap();
+    }
+
+    #[test]
+    fn terminal_error_sanitizer_redacts_marker_free_token_shapes() {
+        let redacted = sanitize_terminal_detail(
+            "Factory access failed for ghp_abcdefghijklmnopqrstuvwxyz123456".to_string(),
+        );
+
+        assert_eq!(
+            redacted,
+            "[redacted Droid PTY terminal error containing sensitive data]"
+        );
+    }
+
+    #[test]
+    fn terminal_error_sanitizer_redacts_known_pair_token_even_when_short() {
+        let secrets = vec!["deadbeef".to_string()];
+        let redacted = sanitize_terminal_detail_with_secrets(
+            "Factory access failed for de\x1b[31madbeef".to_string(),
+            &secrets,
+        );
+
+        assert_eq!(
+            redacted,
+            "[redacted Droid PTY terminal error containing sensitive data]"
+        );
+    }
+
+    #[test]
+    fn terminal_error_sanitizer_strips_terminal_controls() {
+        let sanitized = sanitize_terminal_detail(
+            "Factory offline\x1b[2J\x1b]52;c;clipboard\a retry".to_string(),
+        );
+
+        assert!(!sanitized.contains('\u{1b}'));
+        assert!(!sanitized.contains('\u{7}'));
+        assert!(sanitized.contains("Factory offline"));
+        assert!(sanitized.contains("retry"));
     }
 
     #[derive(Debug)]
@@ -513,6 +736,44 @@ mod tests {
             input: input.payload,
             resize,
         }
+    }
+
+    async fn fake_error_peer<S>(stream: S)
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let (mut reader, mut writer) = tokio::io::split(stream);
+        let hello = read_frame(&mut reader).await.unwrap();
+        assert_eq!(hello.kind, TerminalFrameKind::Hello);
+        write_frame(
+            &mut writer,
+            &TerminalFrame {
+                kind: TerminalFrameKind::Hello,
+                payload: encode_json(&HelloPayload {
+                    min_version: TERMINAL_PROTOCOL_VERSION,
+                    max_version: TERMINAL_PROTOCOL_VERSION,
+                    features: terminal_features(),
+                })
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+        let start = read_frame(&mut reader).await.unwrap();
+        assert_eq!(start.kind, TerminalFrameKind::Start);
+        write_frame(
+            &mut writer,
+            &TerminalFrame {
+                kind: TerminalFrameKind::Error,
+                payload: encode_json(&ErrorPayload {
+                    code: "auth".to_string(),
+                    message: "Factory access failed for token factory-token-fixture".to_string(),
+                })
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 
     fn decode_resize(payload: &[u8]) -> TerminalSize {

@@ -296,6 +296,14 @@ struct GhosttyTerminalView: UIViewRepresentable {
     let renderer: GhosttyTerminalRenderer
     let onNativeOutputVisibilityChanged: (Bool) -> Void
     let onInput: (Data) -> Void
+    /// True when the owner is rendering the Droid PTY/TUI route.
+    var isDroidPty: Bool = false
+    /// Sends `/missions` through the PTY input path when Droid TUI is active.
+    var onMissionsTapped: (() -> Void)?
+    /// Sends the shared terminal interrupt action (Ctrl-C) to the PTY session.
+    var onInterruptTapped: (() -> Void)?
+    /// Closes the active terminal session and leaves an ended state visible.
+    var onCloseTapped: (() -> Void)?
     /// Tapped Clear in the accessory bar.
     var onClearTapped: (() -> Void)?
     /// Tapped "Send to AI" in the accessory bar.
@@ -312,6 +320,10 @@ struct GhosttyTerminalView: UIViewRepresentable {
         view.backgroundColor = .black
         view.isOpaque = true
         view.renderer = renderer
+        view.isDroidPty = isDroidPty
+        view.onMissionsTapped = onMissionsTapped
+        view.onInterruptTapped = onInterruptTapped
+        view.onCloseTapped = onCloseTapped
         view.onClearTapped = onClearTapped
         view.onSendToAssistant = onSendToAssistant
         view.onFontSizePinched = onFontSizePinched
@@ -326,6 +338,10 @@ struct GhosttyTerminalView: UIViewRepresentable {
         renderer.onInput = onInput
         renderer.onNativeOutputVisibilityChanged = onNativeOutputVisibilityChanged
         uiView.renderer = renderer
+        uiView.isDroidPty = isDroidPty
+        uiView.onMissionsTapped = onMissionsTapped
+        uiView.onInterruptTapped = onInterruptTapped
+        uiView.onCloseTapped = onCloseTapped
         uiView.onClearTapped = onClearTapped
         uiView.onSendToAssistant = onSendToAssistant
         uiView.onFontSizePinched = onFontSizePinched
@@ -399,19 +415,15 @@ final class LitterGhosttyInputView: UITextField {
     }
 
     override func insertText(_ text: String) {
-        renderer?.sendText(text)
+        if text == "\n" || text == "\r" {
+            sendTerminalKey(.enter, text: "")
+        } else {
+            renderer?.sendText(text)
+        }
     }
 
     override func deleteBackward() {
-        renderer?.sendKeyEvent(
-            TerminalKeyEvent(
-                action: .press,
-                code: .backspace,
-                mods: TerminalKeyMods(shift: false, ctrl: false, alt: false, meta: false),
-                text: "",
-                repeat: false
-            )
-        )
+        sendTerminalKey(.backspace, text: "")
     }
 
     override var canBecomeFirstResponder: Bool { true }
@@ -455,6 +467,23 @@ final class LitterGhosttyInputView: UITextField {
         )
     }
 
+    private func sendTerminalKey(
+        _ code: TerminalKeyCode,
+        text: String,
+        mods: TerminalKeyMods = TerminalKeyMods(shift: false, ctrl: false, alt: false, meta: false),
+        repeated: Bool = false
+    ) {
+        renderer?.sendKeyEvent(
+            TerminalKeyEvent(
+                action: .press,
+                code: code,
+                mods: mods,
+                text: text,
+                repeat: repeated
+            )
+        )
+    }
+
     private static func mapHIDUsage(_ keyCode: UIKeyboardHIDUsage) -> TerminalKeyCode {
         switch keyCode {
         case .keyboardReturnOrEnter: return .enter
@@ -495,6 +524,14 @@ final class LitterGhosttyInputView: UITextField {
 final class LitterTerminalAccessoryBar: UIView {
     /// Send a raw UTF-8 string straight to the PTY (Esc/Tab/Ctrl-C, etc).
     var onSendRaw: ((String) -> Void)?
+    /// Show and handle a Droid-only `/missions` shortcut.
+    var onMissions: (() -> Void)? {
+        didSet { rebuildKeys() }
+    }
+    /// Shared interrupt operation for the owning terminal session.
+    var onInterrupt: (() -> Void)?
+    /// Close the owning terminal session while keeping an ended state visible.
+    var onClose: (() -> Void)?
     /// Paste the current `UIPasteboard.string` (bracket-pasted by Rust).
     var onPaste: (() -> Void)?
     /// Wipe local scrollback + screen.
@@ -576,19 +613,36 @@ final class LitterTerminalAccessoryBar: UIView {
 
     private func rebuildKeys() {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        addRawKey(title: "Esc", payload: "\u{1B}")
-        addRawKey(title: "Tab", payload: "\t")
-        addRawKey(title: "Ctrl-C", payload: "\u{03}")
-        addRawKey(title: "Ctrl-D", payload: "\u{04}")
-        addRawKey(title: "Ctrl-Z", payload: "\u{1A}")
-        addRawKey(title: "↑", payload: "\u{1B}[A")
-        addRawKey(title: "↓", payload: "\u{1B}[B")
-        addRawKey(title: "←", payload: "\u{1B}[D")
-        addRawKey(title: "→", payload: "\u{1B}[C")
+        if onMissions != nil {
+            _ = addActionKey(title: "Missions") { [weak self] in
+                self?.onMissions?()
+            }
+        }
+        addRawKey(title: "Esc", payload: TerminalControlSequences.escape)
+        addRawKey(title: "Tab", payload: TerminalControlSequences.tab)
+        addRawKey(title: "Enter", payload: TerminalControlSequences.enter)
+        addRawKey(title: "⌫", payload: TerminalControlSequences.backspace)
+        addRawKey(title: "Home", payload: TerminalControlSequences.home)
+        addRawKey(title: "End", payload: TerminalControlSequences.end)
+        addRawKey(title: "PgUp", payload: TerminalControlSequences.pageUp)
+        addRawKey(title: "PgDn", payload: TerminalControlSequences.pageDown)
+        addRawKey(title: "Ctrl-C", payload: TerminalControlSequences.ctrlC)
+        addRawKey(title: "Ctrl-D", payload: TerminalControlSequences.ctrlD)
+        addRawKey(title: "Ctrl-Z", payload: TerminalControlSequences.ctrlZ)
+        addRawKey(title: "←", payload: TerminalControlSequences.arrowLeft)
+        addRawKey(title: "↑", payload: TerminalControlSequences.arrowUp)
+        addRawKey(title: "↓", payload: TerminalControlSequences.arrowDown)
+        addRawKey(title: "→", payload: TerminalControlSequences.arrowRight)
         pasteButton = addActionKey(title: "Paste") { [weak self] in
             self?.onPaste?()
         }
         updatePasteState()
+        _ = addActionKey(title: "Interrupt") { [weak self] in
+            self?.onInterrupt?()
+        }
+        _ = addActionKey(title: "Close") { [weak self] in
+            self?.onClose?()
+        }
         _ = addActionKey(title: "Clear") { [weak self] in
             self?.onClear?()
         }
@@ -881,6 +935,31 @@ final class GhosttyHostView: UIView, UIGestureRecognizerDelegate, UIEditMenuInte
         }
     }
 
+    var isDroidPty: Bool = false {
+        didSet {
+            guard oldValue != isDroidPty else { return }
+            accessoryBar.onMissions = isDroidPty ? { [weak self] in
+                self?.onMissionsTapped?()
+            } : nil
+        }
+    }
+    var onMissionsTapped: (() -> Void)?
+    /// Tapped Interrupt in the accessory bar.
+    var onInterruptTapped: (() -> Void)? {
+        didSet {
+            accessoryBar.onInterrupt = { [weak self] in
+                self?.onInterruptTapped?()
+            }
+        }
+    }
+    /// Tapped Close in the accessory bar.
+    var onCloseTapped: (() -> Void)? {
+        didSet {
+            accessoryBar.onClose = { [weak self] in
+                self?.onCloseTapped?()
+            }
+        }
+    }
     /// Tapped Clear in the accessory bar.
     var onClearTapped: (() -> Void)?
     /// Tapped Send-to-AI in the accessory bar.
@@ -962,8 +1041,17 @@ final class GhosttyHostView: UIView, UIGestureRecognizerDelegate, UIEditMenuInte
 
     private func installAccessoryActions() {
         accessoryBar.onSendRaw = { [weak self] payload in
-            guard let renderer = self?.renderer else { return }
-            renderer.sendPaste(payload)
+            guard let data = payload.data(using: .utf8) else { return }
+            self?.renderer?.onInput?(data)
+        }
+        accessoryBar.onMissions = isDroidPty ? { [weak self] in
+            self?.onMissionsTapped?()
+        } : nil
+        accessoryBar.onInterrupt = { [weak self] in
+            self?.onInterruptTapped?()
+        }
+        accessoryBar.onClose = { [weak self] in
+            self?.onCloseTapped?()
         }
         accessoryBar.onPaste = { [weak self] in
             guard let renderer = self?.renderer else { return }

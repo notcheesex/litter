@@ -177,14 +177,11 @@ fun TerminalScreen(
         )
 
         controller.errorMessage?.let { message ->
-            Text(
-                text = message,
-                color = LitterTheme.danger,
-                fontFamily = LitterTheme.monoFont,
-                fontSize = 12.sp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
+            TerminalErrorBanner(
+                message = message,
+                retryLabel = if (selectedBackend?.isDroidPty == true) "Retry Droid TUI" else "Retry",
+                onRetry = controller::retry,
+                onClose = controller::closeFromUser,
             )
         }
         controller.sshTrustChallenge?.let { challenge ->
@@ -229,6 +226,7 @@ fun TerminalScreen(
         val activeThreadKey = appSnapshot?.activeThread
         TerminalAccessoryRow(
             controller = controller,
+            isDroidPty = selectedBackend?.isDroidPty == true,
             canSendToAssistant = selectedBackend?.isDroidPty != true &&
                 controller.output.isNotEmpty() &&
                 activeThreadKey != null,
@@ -256,6 +254,55 @@ fun TerminalScreen(
             context = context,
             onDismiss = { showConfigSheet = false },
         )
+    }
+}
+
+@Composable
+private fun TerminalErrorBanner(
+    message: String,
+    retryLabel: String,
+    onRetry: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = message,
+            color = LitterTheme.danger,
+            fontFamily = LitterTheme.monoFont,
+            fontSize = 12.sp,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(
+                onClick = onRetry,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.height(30.dp),
+            ) {
+                Text(
+                    text = retryLabel,
+                    color = LitterTheme.accent,
+                    fontFamily = LitterTheme.monoFont,
+                    fontSize = 12.sp,
+                )
+            }
+            TextButton(
+                onClick = onClose,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.height(30.dp),
+            ) {
+                Text(
+                    text = "Close",
+                    color = LitterTheme.textSecondary,
+                    fontFamily = LitterTheme.monoFont,
+                    fontSize = 12.sp,
+                )
+            }
+        }
     }
 }
 
@@ -600,6 +647,7 @@ private fun TerminalHeader(
 @Composable
 private fun TerminalAccessoryRow(
     controller: TerminalSessionController,
+    isDroidPty: Boolean,
     canSendToAssistant: Boolean,
     onSendToAssistant: () -> Unit,
 ) {
@@ -614,17 +662,69 @@ private fun TerminalAccessoryRow(
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        TerminalKey("Esc", enabled = controller.canSendInput) { controller.send("") }
-        TerminalKey("Tab", enabled = controller.canSendInput) { controller.send("\t") }
-        TerminalKey("Ctrl-C", enabled = controller.canSendInput) { controller.send("") }
-        TerminalKey("Ctrl-D", enabled = controller.canSendInput) { controller.send("") }
-        TerminalKey("Ctrl-Z", enabled = controller.canSendInput) { controller.send("") }
-        TerminalKey("←", enabled = controller.canSendInput) { controller.send("[D") }
-        TerminalKey("↑", enabled = controller.canSendInput) { controller.send("[A") }
-        TerminalKey("↓", enabled = controller.canSendInput) { controller.send("[B") }
-        TerminalKey("→", enabled = controller.canSendInput) { controller.send("[C") }
+        if (isDroidPty) {
+            TerminalKey("Missions", enabled = controller.canSendInput) {
+                controller.send(TerminalControlSequences.DROID_MISSIONS_COMMAND)
+            }
+        }
+        TerminalKey("Esc", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ESCAPE)
+        }
+        TerminalKey("Tab", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.TAB)
+        }
+        TerminalKey("Enter", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ENTER)
+        }
+        TerminalKey("⌫", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.BACKSPACE)
+        }
+        TerminalKey("Home", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.HOME)
+        }
+        TerminalKey("End", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.END)
+        }
+        TerminalKey("PgUp", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.PAGE_UP)
+        }
+        TerminalKey("PgDn", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.PAGE_DOWN)
+        }
+        TerminalKey("Ctrl-C", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.CTRL_C)
+        }
+        TerminalKey("Ctrl-D", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.CTRL_D)
+        }
+        TerminalKey("Ctrl-Z", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.CTRL_Z)
+        }
+        TerminalKey("←", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ARROW_LEFT)
+        }
+        TerminalKey("↑", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ARROW_UP)
+        }
+        TerminalKey("↓", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ARROW_DOWN)
+        }
+        TerminalKey("→", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ARROW_RIGHT)
+        }
         TerminalKey("Paste", enabled = controller.canSendInput && !pasteText.isNullOrEmpty()) {
-            pasteText?.let(controller::send)
+            pasteText?.let { text ->
+                val renderer = ActiveTerminalRegistry.current()
+                if (renderer != null) {
+                    renderer.sendPaste(text)
+                } else {
+                    controller.send(text)
+                }
+            }
+        }
+        TerminalKey("Interrupt", enabled = controller.canSendInput) { controller.interrupt() }
+        TerminalKey("Close", enabled = controller.phase != TerminalSessionController.Phase.IDLE) {
+            controller.closeFromUser()
         }
         TerminalKey("Clear", enabled = controller.output.isNotEmpty()) { controller.clearOutput() }
         TerminalKey("Send to AI", enabled = canSendToAssistant, onClick = onSendToAssistant)

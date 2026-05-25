@@ -185,6 +185,16 @@ struct TerminalScreen: View {
                     onInput: { data in
                         Task { await controller.send(data) }
                     },
+                    isDroidPty: selectedBackend?.isDroidPty == true,
+                    onMissionsTapped: selectedBackend?.isDroidPty == true ? {
+                        Task { await controller.send(TerminalControlSequences.droidMissionsCommand) }
+                    } : nil,
+                    onInterruptTapped: {
+                        Task { await controller.interrupt() }
+                    },
+                    onCloseTapped: {
+                        controller.closeFromUser()
+                    },
                     onClearTapped: {
                         controller.clearOutput()
                         ghosttyRenderer.clearScreen()
@@ -221,9 +231,44 @@ struct TerminalScreen: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        if case .failed = controller.phase {
+                            HStack(spacing: 8) {
+                                Button {
+                                    Task { await controller.retry() }
+                                } label: {
+                                    Text(selectedBackend?.isDroidPty == true ? "Retry Droid TUI" : "Retry")
+                                        .font(.custom("SFMono-Regular", size: 12))
+                                        .foregroundColor(accent)
+                                        .padding(.horizontal, 10)
+                                        .frame(height: 30)
+                                        .background(Color.white.opacity(0.08))
+                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    controller.closeFromUser()
+                                } label: {
+                                    Text("Close")
+                                        .font(.custom("SFMono-Regular", size: 12))
+                                        .foregroundColor(.white.opacity(0.72))
+                                        .padding(.horizontal, 10)
+                                        .frame(height: 30)
+                                        .background(Color.white.opacity(0.08))
+                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
+                }
+
+                if shouldShowFailureActions {
+                    failureActionOverlay
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
                 }
             }
             .background(Color.black)
@@ -273,6 +318,61 @@ struct TerminalScreen: View {
         case .running:
             return false
         }
+    }
+
+    private var shouldShowFailureActions: Bool {
+        if case .failed = controller.phase {
+            return !shouldShowStatusOverlay
+        }
+        return false
+    }
+
+    private var failureActionOverlay: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let message = failureMessage {
+                Text(message)
+                    .font(.custom("SFMono-Regular", size: 12))
+                    .foregroundColor(.red)
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 8) {
+                Button {
+                    Task { await controller.retry() }
+                } label: {
+                    Text(selectedBackend?.isDroidPty == true ? "Retry Droid TUI" : "Retry")
+                        .font(.custom("SFMono-Regular", size: 12))
+                        .foregroundColor(accent)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    controller.closeFromUser()
+                } label: {
+                    Text("Close")
+                        .font(.custom("SFMono-Regular", size: 12))
+                        .foregroundColor(.white.opacity(0.72))
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .background(Color.black.opacity(0.82))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var failureMessage: String? {
+        if case .failed(let message) = controller.phase {
+            return message
+        }
+        return nil
     }
 
     private var phaseIcon: String {
