@@ -371,9 +371,17 @@ jobs:
               '${{ needs.android.result }}' === 'success' &&
               '${{ needs.ios.result }}' === 'success';
 
-            const isManagedArtifact = (artifact) =>
+            const isMobileValidationArtifact = (artifact) =>
               artifact.name === 'shared-prep' ||
               artifact.name.startsWith('android-debug-apk-');
+            const isNonValidationStorageArtifact = (artifact) =>
+              artifact.name === 'cargo-dist-cache' ||
+              artifact.name === 'artifacts-plan-dist-manifest' ||
+              artifact.name === 'release-plan' ||
+              artifact.name === 'shared-prep' ||
+              artifact.name.startsWith('artifacts-build-') ||
+              artifact.name.startsWith('android-play-release-') ||
+              artifact.name.endsWith('-release-prep');
 
             const runCache = new Map();
             const getRun = async (runId) => {
@@ -387,13 +395,14 @@ jobs:
               return runCache.get(runId);
             };
 
-            const candidates = [];
+            const mobileCandidates = [];
+            const nonValidationCandidates = [];
             for await (const response of github.paginate.iterator(
               'GET /repos/{owner}/{repo}/actions/artifacts',
               { owner, repo, per_page: 100 }
             )) {
               for (const artifact of response.data) {
-                if (!isManagedArtifact(artifact)) {
+                if (!isMobileValidationArtifact(artifact) && !isNonValidationStorageArtifact(artifact)) {
                   continue;
                 }
 
@@ -404,16 +413,19 @@ jobs:
                 }
 
                 const run = await getRun(runId);
-                if (run.path !== workflowPath) {
+                if (run.path === workflowPath && isMobileValidationArtifact(artifact)) {
+                  mobileCandidates.push({ artifact, run });
                   continue;
                 }
 
-                candidates.push({ artifact, run });
+                if (run.path !== workflowPath && run.status === 'completed' && isNonValidationStorageArtifact(artifact)) {
+                  nonValidationCandidates.push({ artifact, run });
+                }
               }
             }
 
             const validationRuns = new Map();
-            for (const candidate of candidates) {
+            for (const candidate of mobileCandidates) {
               const run = candidate.run;
               const runIsCurrentSuccess = run.id === currentRunId && currentRunIsValidationSuccess;
               const runIsCompletedSuccess = run.status === 'completed' && run.conclusion === 'success';
@@ -441,7 +453,7 @@ jobs:
             const keepRunId = latestValidationRun?.run.id ?? currentRunId;
 
             let deletedArtifacts = 0;
-            for (const { artifact, run } of candidates) {
+            for (const { artifact, run } of mobileCandidates) {
               if (run.id === keepRunId) {
                 continue;
               }
@@ -453,34 +465,35 @@ jobs:
               deletedArtifacts += 1;
               core.info(`Deleted old Mobile CI artifact ${artifact.name} (${artifact.id}) from run ${run.id}.`);
             }
+            for (const { artifact, run } of nonValidationCandidates) {
+              await github.request(
+                'DELETE /repos/{owner}/{repo}/actions/artifacts/{artifact_id}',
+                { owner, repo, artifact_id: artifact.id }
+              );
+              deletedArtifacts += 1;
+              core.info(`Deleted completed non-validation artifact ${artifact.name} (${artifact.id}) from ${run.path} run ${run.id}.`);
+            }
 
-            const cachesResponse = await github.request(
+            const caches = await github.paginate(
               'GET /repos/{owner}/{repo}/actions/caches',
-              { owner, repo, key: 'mobile-bindings-', per_page: 100 }
+              { owner, repo, per_page: 100 }
             );
-            const caches = cachesResponse.data.actions_caches ?? [];
             const sortedCaches = [...caches].sort((a, b) => {
               const aTime = Date.parse(a.last_accessed_at || a.created_at || '1970-01-01T00:00:00Z');
               const bTime = Date.parse(b.last_accessed_at || b.created_at || '1970-01-01T00:00:00Z');
               return bTime - aTime;
             });
-            const keepCacheId = sortedCaches[0]?.id;
             let deletedCaches = 0;
             for (const cache of sortedCaches) {
-              if (cache.id === keepCacheId) {
-                continue;
-              }
-
               await github.request(
                 'DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}',
                 { owner, repo, cache_id: cache.id }
               );
               deletedCaches += 1;
-              core.info(`Deleted old Mobile CI cache ${cache.key} (${cache.id}).`);
+              core.info(`Deleted Actions cache ${cache.id} (${cache.size_in_bytes} bytes).`);
             }
 
             core.notice(
               `Mobile CI storage cleanup kept run ${keepRunId} (current head ${currentHeadSha}); ` +
-              `deleted ${deletedArtifacts} old artifacts and ${deletedCaches} old mobile-bindings caches; ` +
-              `kept cache ${keepCacheId ?? 'none'}.`
+              `deleted ${deletedArtifacts} non-retained artifacts and ${deletedCaches} Actions caches.`
             );
