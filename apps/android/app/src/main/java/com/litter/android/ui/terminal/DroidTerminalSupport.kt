@@ -6,10 +6,12 @@ import com.litter.android.state.AlleycatCredentialStore
 import com.litter.android.state.AppModel
 import com.litter.android.state.SavedServer
 import com.litter.android.state.SavedServerStore
+import com.litter.android.ui.common.isBetaAgentName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import uniffi.codex_mobile_client.AlleycatBridge
 import uniffi.codex_mobile_client.AppAlleycatAgentInfo
+import uniffi.codex_mobile_client.AppAlleycatAgentWire
 import uniffi.codex_mobile_client.AppAlleycatPairPayload
 import uniffi.codex_mobile_client.AppDroidModeCapabilities
 
@@ -63,6 +65,32 @@ object DroidTerminalSupport {
             agentName = normalized(pty.launchAgent) ?: normalized(pty.agentName),
             label = label,
         )
+    }
+
+    fun isPairingConnectableAgent(agent: AppAlleycatAgentInfo): Boolean =
+        agent.available && agent.wire != AppAlleycatAgentWire.TERMINAL
+
+    fun defaultSelectedAgentNames(
+        agents: List<AppAlleycatAgentInfo>,
+        capabilities: AppDroidModeCapabilities,
+    ): Set<String> {
+        val connectableAgents = agents.filter { isPairingConnectableAgent(it) }
+        val droidJsonAgent = normalized(capabilities.jsonNative.agentName)
+            ?.takeIf { capabilities.jsonNative.available }
+            ?.takeIf { name -> connectableAgents.any { it.name == name } }
+        if (droidJsonAgent != null) {
+            return setOf(droidJsonAgent)
+        }
+
+        val stableAgents = connectableAgents
+            .filterNot { isBetaAgentName(it.name, it.displayName) }
+            .map { it.name }
+            .toSet()
+        if (stableAgents.isNotEmpty()) {
+            return stableAgents
+        }
+
+        return connectableAgents.map { it.name }.toSet()
     }
 
     suspend fun discoverTargets(

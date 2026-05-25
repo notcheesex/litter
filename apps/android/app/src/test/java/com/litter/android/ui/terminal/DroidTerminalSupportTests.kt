@@ -56,6 +56,36 @@ class DroidTerminalSupportTests {
         )
     }
 
+    @Test
+    fun `pairing defaults to Droid JSON anchor when Droid modes are advertised`() {
+        val selected = DroidTerminalSupport.defaultSelectedAgentNames(
+            agents = listOf(
+                agent("codex", AppAlleycatAgentWire.WEBSOCKET),
+                agent("droid", AppAlleycatAgentWire.JSONL),
+                agent("droid-pty", AppAlleycatAgentWire.TERMINAL),
+            ),
+            capabilities = modes(),
+        )
+
+        assertEquals(setOf("droid"), selected)
+    }
+
+    @Test
+    fun `pairing selection excludes terminal-only Droid PTY agents`() {
+        assertEquals(
+            false,
+            DroidTerminalSupport.isPairingConnectableAgent(
+                agent("droid-pty", AppAlleycatAgentWire.TERMINAL),
+            ),
+        )
+        assertEquals(
+            true,
+            DroidTerminalSupport.isPairingConnectableAgent(
+                agent("droid", AppAlleycatAgentWire.JSONL),
+            ),
+        )
+    }
+
     private fun modes(ptyAvailable: Boolean = true): AppDroidModeCapabilities =
         AppDroidModeCapabilities(
             supportedModes = if (ptyAvailable) {

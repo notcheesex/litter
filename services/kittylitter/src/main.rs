@@ -5,7 +5,7 @@ fn main() -> anyhow::Result<()> {
         organization: "sigkitten",
         application: "kittylitter",
         label: "com.sigkitten.kittylitter",
-        version: env!("CARGO_PKG_VERSION"),
+        version: option_env!("KITTYLITTER_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
     }
     .run()
 }

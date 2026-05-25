@@ -132,10 +132,10 @@ fun AlleycatAddServerSheet(
                 }
                 if (parsedParams?.nodeId == params.nodeId) {
                     agents = loaded
-                    selectedAgentNames = loaded
-                        .filter { it.available && !isBetaAgentName(it.name, it.displayName) }
-                        .map { it.name }
-                        .toSet()
+                    selectedAgentNames = DroidTerminalSupport.defaultSelectedAgentNames(
+                        agents = loaded,
+                        capabilities = alleycatBridge.droidModeCapabilities(loaded),
+                    )
                     isLoadingAgents = false
                 }
             } catch (e: Exception) {
@@ -203,7 +203,9 @@ fun AlleycatAddServerSheet(
 
     fun connect() {
         val params = parsedParams ?: return
-        val selectedAgents = agents.filter { it.available && it.name in selectedAgentNames }
+        val selectedAgents = agents.filter {
+            DroidTerminalSupport.isPairingConnectableAgent(it) && it.name in selectedAgentNames
+        }
         val fallbackAgent = selectedAgents.firstOrNull() ?: return
         val trimmedDisplay = displayName.trim()
         val resolvedName = trimmedDisplay.ifEmpty { suggestedDisplayName(params) }
@@ -249,8 +251,10 @@ fun AlleycatAddServerSheet(
         }
     }
 
-    val availableAgents = agents.filter { it.available }
-    val selectedAgents = agents.filter { it.available && it.name in selectedAgentNames }
+    val availableAgents = agents.filter { DroidTerminalSupport.isPairingConnectableAgent(it) }
+    val selectedAgents = agents.filter {
+        DroidTerminalSupport.isPairingConnectableAgent(it) && it.name in selectedAgentNames
+    }
     val canConnect = !isConnecting && !isLoadingAgents && parsedParams != null && selectedAgents.isNotEmpty()
     val droidModeCapabilities = remember(agents) {
         alleycatBridge.droidModeCapabilities(agents)
@@ -429,8 +433,9 @@ fun AlleycatAddServerSheet(
                                 droidModeCapabilities,
                             ),
                             selected = agent.name in selectedAgentNames,
+                            selectable = DroidTerminalSupport.isPairingConnectableAgent(agent),
                             onCheckedChange = { checked ->
-                                if (agent.available) {
+                                if (DroidTerminalSupport.isPairingConnectableAgent(agent)) {
                                     selectedAgentNames = if (checked) {
                                         selectedAgentNames + agent.name
                                     } else {
@@ -479,6 +484,7 @@ private fun AgentRow(
     agent: AppAlleycatAgentInfo,
     modeLabel: String?,
     selected: Boolean,
+    selectable: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     // Plain clickable Row instead of TextButton — TextButton injects
@@ -491,7 +497,7 @@ private fun AgentRow(
         modifier = Modifier
             .fillMaxWidth()
             .then(
-                if (agent.available) {
+                if (selectable) {
                     Modifier.clickable { onCheckedChange(!selected) }
                 } else {
                     Modifier
@@ -526,6 +532,8 @@ private fun AgentRow(
         }
         if (!agent.available) {
             Text("Unavailable", color = LitterTheme.textMuted, fontSize = 11.sp)
+        } else if (!selectable) {
+            Text("Use after pairing", color = LitterTheme.textMuted, fontSize = 11.sp)
         } else {
             Checkbox(
                 checked = selected,
