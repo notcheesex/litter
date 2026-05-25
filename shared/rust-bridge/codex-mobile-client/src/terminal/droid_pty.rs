@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf};
 use tokio::sync::{Mutex, mpsc};
 
 use super::backend::{OpenBackendResult, TerminalBackend, TerminalBackendEvent};
@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn terminal_error_sanitizer_strips_terminal_controls() {
         let sanitized = sanitize_terminal_detail(
-            "Factory offline\x1b[2J\x1b]52;c;clipboard\a retry".to_string(),
+            "Factory offline\x1b[2J\x1b]52;c;clipboard\u{7} retry".to_string(),
         );
 
         assert!(!sanitized.contains('\u{1b}'));
