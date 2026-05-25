@@ -27,8 +27,11 @@ final class TerminalSessionController {
     @ObservationIgnored private let appStore: AppStore
     @ObservationIgnored private var outputListener: TerminalOutputRelay?
     @ObservationIgnored private var outputSink: ((Data) -> Void)?
+    @ObservationIgnored private var outputBuffer = TerminalOutputBuffer()
+    @ObservationIgnored private var outputFlushScheduled = false
     @ObservationIgnored private var eventGeneration = 0
     @ObservationIgnored private var terminalSize = TerminalSize(cols: 80, rows: 24)
+    @ObservationIgnored private var lastBackend: TerminalBackendKind?
 
     init(appStore: AppStore = AppModel.shared.store) {
         self.appStore = appStore
@@ -45,6 +48,7 @@ final class TerminalSessionController {
 
     func open(backend: TerminalBackendKind) async {
         guard sessionId == nil else { return }
+        lastBackend = backend
         eventGeneration &+= 1
         let generation = eventGeneration
         phase = .connecting
@@ -64,6 +68,10 @@ final class TerminalSessionController {
                     size: terminalSize
                 )
             }
+            guard generation == eventGeneration else {
+                try? await appStore.closeTerminalSession(id: id)
+                return
+            }
             sessionId = id
             appStore.setActiveTerminalId(id: id)
             guard let session = appStore.terminalSessionHandle(id: id) else {
@@ -76,6 +84,7 @@ final class TerminalSessionController {
             outputListener = listener
             phase = .running
         } catch {
+            guard generation == eventGeneration else { return }
             sessionId = nil
             if let challenge = Self.sshHostTrustChallenge(from: error, backend: backend) {
                 sshTrustChallenge = challenge
@@ -105,7 +114,14 @@ final class TerminalSessionController {
 
     func switchBackend(_ backend: TerminalBackendKind) async {
         close()
-        output = ""
+        clearOutput()
+        await open(backend: backend)
+    }
+
+    func retry() async {
+        guard let backend = lastBackend else { return }
+        close()
+        clearOutput()
         await open(backend: backend)
     }
 
@@ -115,9 +131,8 @@ final class TerminalSessionController {
 
     func send(_ data: Data) async {
         guard let id = sessionId, canSendInput else { return }
-        guard let session = appStore.terminalSessionHandle(id: id) else { return }
         do {
-            try await session.writeInput(data: data)
+            try await appStore.writeToTerminalSession(id: id, data: data)
         } catch {
             phase = .failed(error.localizedDescription)
         }
@@ -127,7 +142,17 @@ final class TerminalSessionController {
         await send(string + "\n")
     }
 
+    func interrupt() async {
+        guard let id = sessionId, canSendInput else { return }
+        do {
+            try await appStore.interruptTerminalSession(id: id)
+        } catch {
+            phase = .failed(error.localizedDescription)
+        }
+    }
+
     func clearOutput() {
+        outputBuffer.clear()
         output = ""
     }
 
@@ -175,9 +200,8 @@ final class TerminalSessionController {
         let size = TerminalSize(cols: cols, rows: rows)
         terminalSize = size
         guard notifyBackend, let id = sessionId, canSendInput else { return }
-        guard let session = appStore.terminalSessionHandle(id: id) else { return }
         do {
-            try await session.resize(size: size)
+            try await appStore.resizeTerminalSession(id: id, size: size)
         } catch {
             phase = .failed(error.localizedDescription)
         }
@@ -188,22 +212,47 @@ final class TerminalSessionController {
         guard let id = sessionId else { return }
         sessionId = nil
         outputListener = nil
+        outputFlushScheduled = false
         phase = .idle
         Task {
             try? await appStore.closeTerminalSession(id: id)
         }
     }
 
+    func closeFromUser() {
+        eventGeneration &+= 1
+        let id = sessionId
+        sessionId = nil
+        outputListener = nil
+        outputFlushScheduled = false
+        sshTrustChallenge = nil
+        flushPendingOutput()
+        phase = .exited(0)
+        if let id {
+            Task {
+                try? await appStore.closeTerminalSession(id: id)
+            }
+        }
+    }
+
     fileprivate func appendOutput(_ data: Data, generation: Int) {
         guard generation == eventGeneration else { return }
-        output += String(decoding: data, as: UTF8.self)
         outputSink?(data)
-        trimOutputIfNeeded()
+        outputBuffer.append(data)
+        scheduleOutputFlush()
     }
 
     fileprivate func markExited(_ code: Int32, generation: Int) {
         guard generation == eventGeneration else { return }
-        phase = .exited(code)
+        flushPendingOutput()
+        if code < 0 {
+            let message = output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? streamClosedMessage()
+                : streamEndedUnexpectedlyMessage()
+            phase = .failed(message)
+        } else {
+            phase = .exited(code)
+        }
     }
 
     private func normalized(_ value: String?) -> String? {
@@ -211,10 +260,36 @@ final class TerminalSessionController {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func trimOutputIfNeeded() {
-        let maxCount = 64_000
-        guard output.count > maxCount else { return }
-        output = String(output.suffix(maxCount))
+    private func streamClosedMessage() -> String {
+        if case .some(.remoteDroidPty) = lastBackend {
+            return "Droid TUI terminal stream closed. Retry the PTY session or go back."
+        }
+        return "Terminal stream closed. Retry the session or go back."
+    }
+
+    private func streamEndedUnexpectedlyMessage() -> String {
+        if case .some(.remoteDroidPty) = lastBackend {
+            return "Droid TUI terminal ended unexpectedly. Review terminal output, then retry if needed."
+        }
+        return "Terminal ended unexpectedly. Review terminal output, then retry if needed."
+    }
+
+    private func scheduleOutputFlush() {
+        guard !outputFlushScheduled else { return }
+        outputFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.032) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.outputFlushScheduled = false
+                self.flushPendingOutput()
+            }
+        }
+    }
+
+    private func flushPendingOutput() {
+        if outputBuffer.flush() {
+            output = outputBuffer.text
+        }
     }
 }
 

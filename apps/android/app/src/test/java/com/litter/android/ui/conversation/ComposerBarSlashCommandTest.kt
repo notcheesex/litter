@@ -28,4 +28,9 @@ class ComposerBarSlashCommandTest {
     fun parseSlashCommandInvocationRejectsUnknownCommands() {
         assertNull(parseSlashCommandInvocation("/definitely-not-real"))
     }
+
+    @Test
+    fun parseSlashCommandInvocationDoesNotClaimDroidTuiMissions() {
+        assertNull(parseSlashCommandInvocation("/missions"))
+    }
 }

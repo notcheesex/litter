@@ -2741,7 +2741,8 @@ impl AppStoreReducer {
         let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
         snapshot.terminal_sessions.push(TerminalSessionSnapshot {
             id: id.clone(),
-            backend_kind,
+            session_id: crate::terminal::TerminalSessionId { value: id.clone() },
+            backend_kind: terminal_snapshot_backend_kind(backend_kind),
             phase: AppTerminalSessionPhase::Running,
             cols,
             rows,
@@ -2857,6 +2858,71 @@ impl AppStoreReducer {
             .iter()
             .find(|s| s.id == id)
             .cloned()
+    }
+}
+
+fn terminal_snapshot_backend_kind(kind: TerminalBackendKind) -> TerminalBackendKind {
+    match kind {
+        TerminalBackendKind::RemoteAlleycat {
+            node_id,
+            relay,
+            shell,
+            ..
+        } => TerminalBackendKind::RemoteAlleycat {
+            node_id,
+            token: "<redacted>".to_string(),
+            relay,
+            shell,
+        },
+        TerminalBackendKind::RemoteDroidPty {
+            node_id,
+            relay,
+            agent,
+            cwd,
+            ..
+        } => TerminalBackendKind::RemoteDroidPty {
+            node_id,
+            token: "<redacted>".to_string(),
+            relay,
+            agent,
+            cwd,
+        },
+        TerminalBackendKind::RemoteSsh {
+            host,
+            port,
+            username,
+            auth,
+            shell,
+            accept_unknown_host,
+            cwd,
+        } => TerminalBackendKind::RemoteSsh {
+            host,
+            port,
+            username,
+            auth: redacted_terminal_ssh_auth(auth),
+            shell,
+            accept_unknown_host,
+            cwd,
+        },
+        other => other,
+    }
+}
+
+fn redacted_terminal_ssh_auth(
+    auth: crate::terminal::TerminalSshAuth,
+) -> crate::terminal::TerminalSshAuth {
+    match auth {
+        crate::terminal::TerminalSshAuth::Password { .. } => {
+            crate::terminal::TerminalSshAuth::Password {
+                password: "<redacted>".to_string(),
+            }
+        }
+        crate::terminal::TerminalSshAuth::PrivateKey { passphrase, .. } => {
+            crate::terminal::TerminalSshAuth::PrivateKey {
+                key_pem: "<redacted>".to_string(),
+                passphrase: passphrase.map(|_| "<redacted>".to_string()),
+            }
+        }
     }
 }
 
@@ -3711,6 +3777,65 @@ mod tests {
         let server = snapshot.servers.get("srv").unwrap();
         assert_eq!(server.agent_runtimes.len(), 1);
         assert_eq!(server.agent_runtimes[0].kind, "opencode".to_string());
+    }
+
+    #[test]
+    fn terminal_projection_does_not_contaminate_chat_store() {
+        let reducer = AppStoreReducer::new();
+        let config = make_server_config("srv");
+        reducer.upsert_server(&config, ServerHealthSnapshot::Connected);
+        let key = ThreadKey {
+            server_id: "srv".to_string(),
+            thread_id: "thread".to_string(),
+        };
+        reducer.upsert_thread_snapshot(ThreadSnapshot::from_info(
+            "srv",
+            make_thread_info("thread"),
+        ));
+        reducer.set_active_thread(Some(key.clone()));
+
+        reducer.open_terminal_session_record(
+            "terminal-test".to_string(),
+            TerminalBackendKind::RemoteDroidPty {
+                node_id: "node".to_string(),
+                token: "pairing-token-stays-out-of-output".to_string(),
+                relay: None,
+                agent: Some("droid-pty".to_string()),
+                cwd: Some("/workspace".to_string()),
+            },
+            80,
+            24,
+        );
+        reducer.append_terminal_output(
+            "terminal-test",
+            br#"{"jsonrpc":"2.0","method":"thread/item","params":{"content":"terminal"}}"#,
+        );
+        reducer.update_terminal_size("terminal-test", 132, 43);
+        reducer.mark_terminal_exited("terminal-test", 0);
+
+        let snapshot = reducer.snapshot();
+        let thread = snapshot.threads.get(&key).expect("thread remains");
+        assert!(thread.items.is_empty());
+        assert!(thread.local_overlay_items.is_empty());
+        assert_eq!(snapshot.active_thread, Some(key));
+        assert!(snapshot.pending_approvals.is_empty());
+        assert!(snapshot.pending_user_inputs.is_empty());
+        let terminal = snapshot
+            .terminal_sessions
+            .iter()
+            .find(|session| session.id == "terminal-test")
+            .expect("terminal projection exists");
+        assert_eq!(terminal.session_id.value, "terminal-test");
+        assert_eq!(terminal.cols, 132);
+        assert_eq!(terminal.rows, 43);
+        assert_eq!(terminal.exit_code, Some(0));
+        assert!(terminal.output_tail.starts_with(br#"{"jsonrpc":"#));
+        match &terminal.backend_kind {
+            TerminalBackendKind::RemoteDroidPty { token, .. } => {
+                assert_eq!(token, "<redacted>");
+            }
+            other => panic!("expected Droid PTY backend, got {other:?}"),
+        }
     }
 
     #[test]

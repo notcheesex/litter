@@ -1,6 +1,8 @@
 pub use crate::terminal::{
-    TerminalBackendKind, TerminalCellMetrics, TerminalCellRange, TerminalConfig,
-    TerminalCursorStyle, TerminalError, TerminalKeyAction, TerminalKeyCode, TerminalKeyEvent,
+    DroidPtySessionHandle, DroidPtySessionRequest, TerminalBackendKind, TerminalCellMetrics,
+    TerminalCellRange, TerminalConfig, TerminalCursorStyle, TerminalError, TerminalEvent,
+    TerminalEventKind, TerminalEventListener, TerminalKeyAction, TerminalKeyCode, TerminalKeyEvent,
     TerminalKeyMods, TerminalOutputListener, TerminalPalette, TerminalRenderer,
-    TerminalRendererBackend, TerminalSession, TerminalSize, TerminalThemePreset,
+    TerminalRendererBackend, TerminalSession, TerminalSessionId, TerminalSize,
+    TerminalThemePreset,
 };

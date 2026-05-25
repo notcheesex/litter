@@ -687,6 +687,7 @@ private struct HomeNavigationView: View {
     @State private var homeDashboardModel = HomeDashboardModel()
     @State private var savedAppsStore = SavedAppsStore.shared
     @State private var navigationPath: [HomeNavigationRoute] = []
+    @State private var droidTerminalTargets: [DroidTerminalTarget] = []
     @State private var directoryPickerSheet: SessionLaunchSupport.DirectoryPickerSheetModel?
     @State private var showProjectPicker = false
     @State private var openingRecentSessionKey: ThreadKey?
@@ -723,8 +724,13 @@ private struct HomeNavigationView: View {
         /// Saved-app detail, pushed when the user taps a home-screen thread
         /// that has saved apps (or when routed from the AppsList).
         case savedApp(appId: String)
-        /// Local on-device terminal backed by the shared Rust terminal session.
-        case terminal(preferredAlleycatNodeId: String?)
+        /// Terminal backed by the shared Rust terminal session. Droid TUI uses
+        /// the same terminal route with an explicit PTY mode flag.
+        case terminal(
+            preferredAlleycatNodeId: String?,
+            preferredDroidPty: Bool,
+            preferredDroidPtyAgent: String?
+        )
     }
 
     private var connectedServerOptions: [DirectoryPickerServerOption] {
@@ -746,8 +752,26 @@ private struct HomeNavigationView: View {
         return nil
         #else
         guard experimentalFeatures.isEnabled(.terminal) else { return nil }
-        return { navigationPath.append(.terminal(preferredAlleycatNodeId: nil)) }
+        return {
+            navigationPath.append(
+                .terminal(
+                    preferredAlleycatNodeId: nil,
+                    preferredDroidPty: false,
+                    preferredDroidPtyAgent: nil
+                )
+            )
+        }
         #endif
+    }
+
+    private var droidTerminalLauncher: (() -> Void)? {
+        guard let target = DroidTerminalSupport.preferredTarget(
+            in: droidTerminalTargets,
+            preferredServerId: homeDashboardModel.selectedProject?.serverId ?? homeDashboardModel.selectedServerId
+        ) else {
+            return nil
+        }
+        return { openDroidTerminal(target) }
     }
 
     private var pinnedThreadHydrationSignature: String {
@@ -923,7 +947,8 @@ private struct HomeNavigationView: View {
                         threadKey: nil,
                         serverId: serverId,
                         onOpenWallpaper: { navigationPath.append(.serverWallpaperSelection(serverId: serverId)) },
-                        onOpenShell: remoteShellLauncher(for: serverId)
+                        onOpenShell: remoteShellLauncher(for: serverId),
+                        onOpenDroidTerminal: droidTerminalLauncher(for: serverId)
                     )
                 case let .serverWallpaperSelection(serverId):
                     WallpaperSelectionView(
@@ -956,10 +981,12 @@ private struct HomeNavigationView: View {
                     AppsListView()
                 case .savedApp(let appId):
                     SavedAppDetailView(appId: appId)
-                case let .terminal(preferredAlleycatNodeId):
+                case let .terminal(preferredAlleycatNodeId, preferredDroidPty, preferredDroidPtyAgent):
                     TerminalScreen(
                         cwd: preferredTerminalWorkingDirectory(),
-                        preferredAlleycatNodeId: preferredAlleycatNodeId
+                        preferredAlleycatNodeId: preferredAlleycatNodeId,
+                        preferredDroidPty: preferredDroidPty,
+                        preferredDroidPtyAgent: preferredDroidPtyAgent
                     )
                 }
             }
@@ -982,6 +1009,9 @@ private struct HomeNavigationView: View {
         }
         .onChange(of: pinnedThreadHydrationSignature) { _, _ in
             hydratePinnedThreadsIfNeeded()
+        }
+        .task(id: droidTerminalDiscoverySignature) {
+            droidTerminalTargets = await DroidTerminalSupport.discoverTargets(appModel: appModel)
         }
         .onChange(of: appState.pendingThreadNavigation) { _, newKey in
             if let newKey {
@@ -1192,8 +1222,51 @@ private struct HomeNavigationView: View {
             return nil
         }
         return {
-            navigationPath.append(.terminal(preferredAlleycatNodeId: nodeId))
+            navigationPath.append(
+                .terminal(
+                    preferredAlleycatNodeId: nodeId,
+                    preferredDroidPty: false,
+                    preferredDroidPtyAgent: nil
+                )
+            )
         }
+    }
+
+    private func droidTerminalLauncher(for serverId: String) -> (() -> Void)? {
+        guard let target = DroidTerminalSupport.preferredTarget(
+            in: droidTerminalTargets.filter { $0.serverId == serverId },
+            preferredServerId: serverId
+        ) else {
+            return nil
+        }
+        return { openDroidTerminal(target) }
+    }
+
+    private func openDroidTerminal(_ target: DroidTerminalTarget) {
+        navigationPath.append(
+            .terminal(
+                preferredAlleycatNodeId: target.nodeId,
+                preferredDroidPty: true,
+                preferredDroidPtyAgent: target.agentName
+            )
+        )
+    }
+
+    private var droidTerminalDiscoverySignature: String {
+        let servers = appModel.snapshot?.servers
+            .sorted { $0.serverId < $1.serverId }
+            .map { server in
+                let runtimes = server.agentRuntimes
+                    .sorted { $0.kind < $1.kind }
+                    .map { "\($0.kind):\($0.available)" }
+                    .joined(separator: ",")
+                return "\(server.serverId):\(server.health):\(runtimes)"
+            }
+            .joined(separator: "|") ?? "no-snapshot"
+        let saved = SavedServerStore.rememberedServers()
+            .map { "\($0.id):\($0.alleycatNodeId ?? ""):\($0.alleycatAgentName ?? "")" }
+            .joined(separator: "|")
+        return "\(servers)#\(saved)"
     }
 
     private func savedAlleycatNodeId(for serverId: String) -> String? {
@@ -1499,6 +1572,7 @@ private struct HomeNavigationView: View {
             onShowSettings: { appState.showSettings = true },
             onShowApps: savedAppsStore.apps.isEmpty ? nil : { navigationPath.append(.appsList) },
             onShowTerminal: terminalLauncher,
+            onShowDroidTerminal: droidTerminalLauncher,
             onPinThread: pinThread,
             onUnpinThread: unpinThread,
             onHideThread: hideThread,
@@ -1542,6 +1616,7 @@ private struct HomeNavigationView: View {
             onShowSettings: { appState.showSettings = true },
             onShowApps: savedAppsStore.apps.isEmpty ? nil : { navigationPath.append(.appsList) },
             onShowTerminal: terminalLauncher,
+            onShowDroidTerminal: droidTerminalLauncher,
             onPinThread: pinThread,
             onUnpinThread: unpinThread,
             onHideThread: hideThread,

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.PhoneIphone
 import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -79,6 +80,8 @@ import uniffi.codex_mobile_client.TerminalSshAuth
 fun TerminalScreen(
     cwd: String? = null,
     preferredAlleycatNodeId: String? = null,
+    preferredDroidPty: Boolean = false,
+    preferredDroidPtyAgent: String? = null,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -90,10 +93,33 @@ fun TerminalScreen(
     var nativeRendererAvailable by remember {
         mutableStateOf(rendererStatus.canCreateAndroidSurface)
     }
-    val backendOptions = remember(cwd, prootState) { loadBackendOptions(context, cwd, prootState) }
-    var selectedBackendId by remember(preferredAlleycatNodeId) { mutableStateOf<String?>(null) }
+    val backendOptions = remember(
+        cwd,
+        prootState,
+        preferredAlleycatNodeId,
+        preferredDroidPty,
+        preferredDroidPtyAgent,
+    ) {
+        loadBackendOptions(
+            context = context,
+            cwd = cwd,
+            prootState = prootState,
+            preferredAlleycatNodeId = preferredAlleycatNodeId,
+            preferredDroidPty = preferredDroidPty,
+            preferredDroidPtyAgent = preferredDroidPtyAgent,
+        )
+    }
+    var selectedBackendId by remember(
+        preferredAlleycatNodeId,
+        preferredDroidPty,
+        preferredDroidPtyAgent,
+    ) { mutableStateOf<String?>(null) }
     val selectedBackend = backendOptions.firstOrNull { it.id == selectedBackendId }
-        ?: backendOptions.firstOrNull()
+        ?: if (preferredDroidPty) {
+            backendOptions.firstOrNull { it.isDroidPty }
+        } else {
+            backendOptions.firstOrNull()
+        }
     var terminalGridSize by remember { mutableStateOf(TerminalGridSize(cols = 80, rows = 24)) }
     var showConfigSheet by remember { mutableStateOf(false) }
 
@@ -109,9 +135,14 @@ fun TerminalScreen(
         TerminalConfigPrefs.currentConfig()
     }
 
-    LaunchedEffect(backendOptions, preferredAlleycatNodeId) {
+    LaunchedEffect(backendOptions, preferredAlleycatNodeId, preferredDroidPty, preferredDroidPtyAgent) {
         if (backendOptions.none { it.id == selectedBackendId }) {
-            selectedBackendId = initialBackendId(backendOptions, preferredAlleycatNodeId)
+            selectedBackendId = initialBackendId(
+                options = backendOptions,
+                preferredAlleycatNodeId = preferredAlleycatNodeId,
+                preferredDroidPty = preferredDroidPty,
+                preferredDroidPtyAgent = preferredDroidPtyAgent,
+            )
         }
     }
 
@@ -134,6 +165,8 @@ fun TerminalScreen(
         TerminalHeader(
             phase = controller.phase,
             exitCode = controller.exitCode,
+            title = selectedBackend?.headerTitle
+                ?: if (preferredDroidPty) "Droid TUI Terminal" else "Terminal",
             selectedBackend = selectedBackend,
             backendOptions = backendOptions,
             onSelectBackend = { option ->
@@ -144,14 +177,11 @@ fun TerminalScreen(
         )
 
         controller.errorMessage?.let { message ->
-            Text(
-                text = message,
-                color = LitterTheme.danger,
-                fontFamily = LitterTheme.monoFont,
-                fontSize = 12.sp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
+            TerminalErrorBanner(
+                message = message,
+                retryLabel = if (selectedBackend?.isDroidPty == true) "Retry Droid TUI" else "Retry",
+                onRetry = controller::retry,
+                onClose = controller::closeFromUser,
             )
         }
         controller.sshTrustChallenge?.let { challenge ->
@@ -182,6 +212,7 @@ fun TerminalScreen(
             onNativeRendererUnavailable = { nativeRendererAvailable = false },
             prootState = prootState,
             selectedBackend = selectedBackend,
+            preferredDroidPty = preferredDroidPty,
             terminalGridSize = terminalGridSize,
             onTerminalGridSizeChanged = { terminalGridSize = it },
             density = density,
@@ -195,7 +226,10 @@ fun TerminalScreen(
         val activeThreadKey = appSnapshot?.activeThread
         TerminalAccessoryRow(
             controller = controller,
-            canSendToAssistant = controller.output.isNotEmpty() && activeThreadKey != null,
+            isDroidPty = selectedBackend?.isDroidPty == true,
+            canSendToAssistant = selectedBackend?.isDroidPty != true &&
+                controller.output.isNotEmpty() &&
+                activeThreadKey != null,
             onSendToAssistant = {
                 val key = activeThreadKey ?: return@TerminalAccessoryRow
                 val selection = ActiveTerminalRegistry.readSelection()
@@ -220,6 +254,55 @@ fun TerminalScreen(
             context = context,
             onDismiss = { showConfigSheet = false },
         )
+    }
+}
+
+@Composable
+private fun TerminalErrorBanner(
+    message: String,
+    retryLabel: String,
+    onRetry: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = message,
+            color = LitterTheme.danger,
+            fontFamily = LitterTheme.monoFont,
+            fontSize = 12.sp,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(
+                onClick = onRetry,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.height(30.dp),
+            ) {
+                Text(
+                    text = retryLabel,
+                    color = LitterTheme.accent,
+                    fontFamily = LitterTheme.monoFont,
+                    fontSize = 12.sp,
+                )
+            }
+            TextButton(
+                onClick = onClose,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.height(30.dp),
+            ) {
+                Text(
+                    text = "Close",
+                    color = LitterTheme.textSecondary,
+                    fontFamily = LitterTheme.monoFont,
+                    fontSize = 12.sp,
+                )
+            }
+        }
     }
 }
 
@@ -335,6 +418,7 @@ private fun TerminalOutputPane(
     onNativeRendererUnavailable: () -> Unit,
     prootState: AndroidProotBootstrap.BootstrapState,
     selectedBackend: TerminalBackendOption?,
+    preferredDroidPty: Boolean,
     terminalGridSize: TerminalGridSize,
     onTerminalGridSizeChanged: (TerminalGridSize) -> Unit,
     density: androidx.compose.ui.unit.Density,
@@ -366,7 +450,8 @@ private fun TerminalOutputPane(
                 )
             },
     ) {
-        if (nativeRendererAvailable) {
+        val emptyMessage = terminalEmptyMessage(prootState, selectedBackend, preferredDroidPty)
+        if (nativeRendererAvailable && emptyMessage.isEmpty()) {
             GhosttyTerminalSurface(
                 controller = controller,
                 rendererStatus = rendererStatus,
@@ -400,7 +485,7 @@ private fun TerminalOutputPane(
                 ) {
                     Text(
                         text = controller.output.ifEmpty {
-                            terminalEmptyMessage(prootState, selectedBackend)
+                            emptyMessage
                         },
                         color = LitterTheme.accent,
                         fontFamily = LitterTheme.monoFont,
@@ -458,6 +543,7 @@ private fun applyResize(
 private fun TerminalHeader(
     phase: TerminalSessionController.Phase,
     exitCode: Int?,
+    title: String,
     selectedBackend: TerminalBackendOption?,
     backendOptions: List<TerminalBackendOption>,
     onSelectBackend: (TerminalBackendOption) -> Unit,
@@ -479,7 +565,7 @@ private fun TerminalHeader(
             )
         }
         Text(
-            text = "Terminal",
+            text = title,
             color = LitterTheme.textPrimary,
             fontFamily = LitterTheme.monoFont,
             fontWeight = FontWeight.SemiBold,
@@ -561,6 +647,7 @@ private fun TerminalHeader(
 @Composable
 private fun TerminalAccessoryRow(
     controller: TerminalSessionController,
+    isDroidPty: Boolean,
     canSendToAssistant: Boolean,
     onSendToAssistant: () -> Unit,
 ) {
@@ -575,17 +662,69 @@ private fun TerminalAccessoryRow(
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        TerminalKey("Esc", enabled = controller.canSendInput) { controller.send("") }
-        TerminalKey("Tab", enabled = controller.canSendInput) { controller.send("\t") }
-        TerminalKey("Ctrl-C", enabled = controller.canSendInput) { controller.send("") }
-        TerminalKey("Ctrl-D", enabled = controller.canSendInput) { controller.send("") }
-        TerminalKey("Ctrl-Z", enabled = controller.canSendInput) { controller.send("") }
-        TerminalKey("←", enabled = controller.canSendInput) { controller.send("[D") }
-        TerminalKey("↑", enabled = controller.canSendInput) { controller.send("[A") }
-        TerminalKey("↓", enabled = controller.canSendInput) { controller.send("[B") }
-        TerminalKey("→", enabled = controller.canSendInput) { controller.send("[C") }
+        if (isDroidPty) {
+            TerminalKey("Missions", enabled = controller.canSendInput) {
+                controller.send(TerminalControlSequences.DROID_MISSIONS_COMMAND)
+            }
+        }
+        TerminalKey("Esc", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ESCAPE)
+        }
+        TerminalKey("Tab", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.TAB)
+        }
+        TerminalKey("Enter", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ENTER)
+        }
+        TerminalKey("⌫", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.BACKSPACE)
+        }
+        TerminalKey("Home", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.HOME)
+        }
+        TerminalKey("End", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.END)
+        }
+        TerminalKey("PgUp", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.PAGE_UP)
+        }
+        TerminalKey("PgDn", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.PAGE_DOWN)
+        }
+        TerminalKey("Ctrl-C", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.CTRL_C)
+        }
+        TerminalKey("Ctrl-D", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.CTRL_D)
+        }
+        TerminalKey("Ctrl-Z", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.CTRL_Z)
+        }
+        TerminalKey("←", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ARROW_LEFT)
+        }
+        TerminalKey("↑", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ARROW_UP)
+        }
+        TerminalKey("↓", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ARROW_DOWN)
+        }
+        TerminalKey("→", enabled = controller.canSendInput) {
+            controller.send(TerminalControlSequences.ARROW_RIGHT)
+        }
         TerminalKey("Paste", enabled = controller.canSendInput && !pasteText.isNullOrEmpty()) {
-            pasteText?.let(controller::send)
+            pasteText?.let { text ->
+                val renderer = ActiveTerminalRegistry.current()
+                if (renderer != null) {
+                    renderer.sendPaste(text)
+                } else {
+                    controller.send(text)
+                }
+            }
+        }
+        TerminalKey("Interrupt", enabled = controller.canSendInput) { controller.interrupt() }
+        TerminalKey("Close", enabled = controller.phase != TerminalSessionController.Phase.IDLE) {
+            controller.closeFromUser()
         }
         TerminalKey("Clear", enabled = controller.output.isNotEmpty()) { controller.clearOutput() }
         TerminalKey("Send to AI", enabled = canSendToAssistant, onClick = onSendToAssistant)
@@ -636,19 +775,32 @@ private fun phaseColor(phase: TerminalSessionController.Phase): Color = when (ph
 private data class TerminalBackendOption(
     val id: String,
     val title: String,
+    val headerTitle: String = "Terminal",
     val runningLabel: String,
     val icon: ImageVector,
     val alleycatNodeId: String? = null,
     val supportsResize: Boolean,
+    val isDroidPty: Boolean = false,
     val backend: TerminalBackendKind,
 )
 
 private fun initialBackendId(
     options: List<TerminalBackendOption>,
     preferredAlleycatNodeId: String?,
+    preferredDroidPty: Boolean,
+    preferredDroidPtyAgent: String?,
 ): String? {
     val preferred = normalized(preferredAlleycatNodeId)
-    return options.firstOrNull { it.alleycatNodeId == preferred }?.id
+    if (preferredDroidPty) {
+        return options.firstOrNull {
+            it.isDroidPty &&
+                it.alleycatNodeId == preferred &&
+                normalized(preferredDroidPtyAgent) == normalized(it.droidPtyAgentName())
+        }?.id
+            ?: options.firstOrNull { it.isDroidPty && it.alleycatNodeId == preferred }?.id
+            ?: options.firstOrNull { it.isDroidPty }?.id
+    }
+    return options.firstOrNull { it.alleycatNodeId == preferred && !it.isDroidPty }?.id
         ?: options.firstOrNull()?.id
 }
 
@@ -656,9 +808,12 @@ private fun loadBackendOptions(
     context: Context,
     cwd: String?,
     prootState: AndroidProotBootstrap.BootstrapState,
+    preferredAlleycatNodeId: String?,
+    preferredDroidPty: Boolean,
+    preferredDroidPtyAgent: String?,
 ): List<TerminalBackendOption> {
     val options = mutableListOf<TerminalBackendOption>()
-    if (prootState.status == AndroidProotBootstrap.Status.Ready) {
+    if (!preferredDroidPty && prootState.status == AndroidProotBootstrap.Status.Ready) {
         options.add(
             TerminalBackendOption(
                 id = "local-proot",
@@ -679,26 +834,51 @@ private fun loadBackendOptions(
         if (nodeId != null && seenNodeIds.add(nodeId)) {
             val token = credentialStore.loadToken(nodeId)?.trim()?.takeIf { it.isNotEmpty() }
             if (token != null) {
-                options.add(
-                    TerminalBackendOption(
-                        id = "alleycat-$nodeId",
-                        title = saved.name.trim().ifEmpty { "Remote shell" },
-                        runningLabel = "remote shell",
-                        icon = Icons.Outlined.Storage,
-                        alleycatNodeId = nodeId,
-                        supportsResize = true,
-                        backend = TerminalBackendKind.RemoteAlleycat(
-                            nodeId = nodeId,
-                            token = token,
-                            relay = normalized(saved.alleycatRelay),
-                            shell = null,
+                if (preferredDroidPty && nodeId == normalized(preferredAlleycatNodeId)) {
+                    options.add(
+                        TerminalBackendOption(
+                            id = DroidTerminalSupport.backendId(nodeId, preferredDroidPtyAgent),
+                            title = DroidTerminalSupport.DEFAULT_LABEL,
+                            headerTitle = "Droid TUI Terminal",
+                            runningLabel = "Droid TUI",
+                            icon = Icons.Outlined.Terminal,
+                            alleycatNodeId = nodeId,
+                            supportsResize = true,
+                            isDroidPty = true,
+                            backend = TerminalBackendKind.RemoteDroidPty(
+                                nodeId = nodeId,
+                                token = token,
+                                relay = normalized(saved.alleycatRelay),
+                                agent = normalized(preferredDroidPtyAgent),
+                                cwd = normalized(cwd),
+                            ),
                         ),
-                    ),
-                )
+                    )
+                }
+                if (!preferredDroidPty) {
+                    options.add(
+                        TerminalBackendOption(
+                            id = "alleycat-$nodeId",
+                            title = saved.name.trim().ifEmpty { "Remote shell" },
+                            headerTitle = "Terminal",
+                            runningLabel = "remote shell",
+                            icon = Icons.Outlined.Storage,
+                            alleycatNodeId = nodeId,
+                            supportsResize = true,
+                            backend = TerminalBackendKind.RemoteAlleycat(
+                                nodeId = nodeId,
+                                token = token,
+                                relay = normalized(saved.alleycatRelay),
+                                shell = null,
+                            ),
+                        ),
+                    )
+                }
                 return@forEach
             }
         }
 
+        if (preferredDroidPty) return@forEach
         val host = saved.hostname.takeIf { it.isNotBlank() } ?: return@forEach
         val sshPort = (saved.sshPort ?: 22).toInt()
         val key = "${host.lowercase()}:$sshPort"
@@ -709,6 +889,7 @@ private fun loadBackendOptions(
             TerminalBackendOption(
                 id = "ssh-$key",
                 title = saved.name.trim().ifEmpty { "${credential.username}@$host" },
+                headerTitle = "Terminal",
                 runningLabel = "ssh shell",
                 icon = Icons.Outlined.Storage,
                 supportsResize = true,
@@ -727,6 +908,9 @@ private fun loadBackendOptions(
     return options
 }
 
+private fun TerminalBackendOption.droidPtyAgentName(): String? =
+    (backend as? TerminalBackendKind.RemoteDroidPty)?.agent
+
 private fun SavedSshCredential.toTerminalSshAuth(): TerminalSshAuth? = when (method) {
     SshAuthMethod.PASSWORD -> password
         ?.takeIf { it.isNotEmpty() }
@@ -742,8 +926,12 @@ private fun normalized(value: String?): String? =
 private fun terminalEmptyMessage(
     prootState: AndroidProotBootstrap.BootstrapState,
     selectedBackend: TerminalBackendOption?,
+    preferredDroidPty: Boolean,
 ): String {
     if (selectedBackend != null) return ""
+    if (preferredDroidPty) {
+        return "Droid TUI terminal is unavailable for this host.\nGo back and retry after pairing a host that advertises Droid PTY.\n"
+    }
     return when (prootState.status) {
         AndroidProotBootstrap.Status.Pending,
         AndroidProotBootstrap.Status.Bootstrapping -> "Preparing local Alpine...\n"

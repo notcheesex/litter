@@ -16,6 +16,14 @@ source "$WORKSPACE_DIR/../../tools/scripts/load-sccache-aws-creds.sh"
 CRATE_DIR="$WORKSPACE_DIR/codex-mobile-client"
 OUT_SWIFT="$WORKSPACE_DIR/generated/swift"
 OUT_KOTLIN="$WORKSPACE_DIR/generated/kotlin"
+REPRO_TMP_DIR=""
+
+cleanup() {
+    if [[ -n "${REPRO_TMP_DIR:-}" && -d "$REPRO_TMP_DIR" ]]; then
+        rm -rf "$REPRO_TMP_DIR"
+    fi
+}
+trap cleanup EXIT
 
 cd "$WORKSPACE_DIR"
 
@@ -77,34 +85,78 @@ if [[ ! -f "$DYLIB_FILE" ]]; then
     exit 1
 fi
 
-if [[ "$GENERATE_SWIFT" -eq 1 ]]; then
-    echo "==> Generating Swift bindings -> $OUT_SWIFT"
-    mkdir -p "$OUT_SWIFT"
-    rm -f \
-        "$OUT_SWIFT/codex_app_server_protocol.swift" \
-        "$OUT_SWIFT/codex_app_server_protocolFFI.h" \
-        "$OUT_SWIFT/codex_app_server_protocolFFI.modulemap" \
-        "$OUT_SWIFT/codex_protocol.swift" \
-        "$OUT_SWIFT/codex_protocolFFI.h" \
-        "$OUT_SWIFT/codex_protocolFFI.modulemap"
+generate_swift_bindings() {
+    local out_dir="$1"
+
+    echo "==> Generating Swift bindings -> $out_dir"
+    mkdir -p "$out_dir"
     cargo run -p uniffi-bindgen -- generate \
         --library "$DYLIB_FILE" \
         --language swift \
-        --out-dir "$OUT_SWIFT"
-    cp "$OUT_SWIFT/codex_mobile_clientFFI.modulemap" "$OUT_SWIFT/module.modulemap"
-fi
+        --out-dir "$out_dir"
+    cp "$out_dir/codex_mobile_clientFFI.modulemap" "$out_dir/module.modulemap"
+}
 
-if [[ "$GENERATE_KOTLIN" -eq 1 ]]; then
-    echo "==> Generating Kotlin bindings -> $OUT_KOTLIN"
-    mkdir -p "$OUT_KOTLIN"
-    rm -rf \
-        "$OUT_KOTLIN/uniffi/codex_app_server_protocol" \
-        "$OUT_KOTLIN/uniffi/codex_protocol"
+generate_kotlin_bindings() {
+    local out_dir="$1"
+
+    echo "==> Generating Kotlin bindings -> $out_dir"
+    mkdir -p "$out_dir"
     cargo run -p uniffi-bindgen -- generate \
         --library "$DYLIB_FILE" \
         --language kotlin \
-        --out-dir "$OUT_KOTLIN"
+        --out-dir "$out_dir"
+}
+
+verify_regeneration_idempotence() {
+    if [[ "${VERIFY_BINDING_REPRODUCIBILITY:-1}" == "0" ]]; then
+        echo "==> Skipping binding regeneration idempotence check (VERIFY_BINDING_REPRODUCIBILITY=0)"
+        return
+    fi
+
+    REPRO_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-mobile-bindings.XXXXXX")"
+    echo "==> Verifying binding regeneration idempotence (second pass -> $REPRO_TMP_DIR)"
+
+    if [[ "$GENERATE_SWIFT" -eq 1 ]]; then
+        generate_swift_bindings "$REPRO_TMP_DIR/swift"
+        if ! diff -ruN "$OUT_SWIFT" "$REPRO_TMP_DIR/swift"; then
+            echo "ERROR: Swift binding regeneration is not idempotent" >&2
+            exit 1
+        fi
+    fi
+
+    if [[ "$GENERATE_KOTLIN" -eq 1 ]]; then
+        generate_kotlin_bindings "$REPRO_TMP_DIR/kotlin"
+        if ! diff -ruN "$OUT_KOTLIN" "$REPRO_TMP_DIR/kotlin"; then
+            echo "ERROR: Kotlin binding regeneration is not idempotent" >&2
+            exit 1
+        fi
+    fi
+
+    echo "==> Binding regeneration idempotence verified"
+}
+
+run_artifact_policy_check() {
+    if [[ "${VERIFY_BINDING_ARTIFACT_POLICY:-1}" == "0" ]]; then
+        echo "==> Skipping generated/build artifact policy check (VERIFY_BINDING_ARTIFACT_POLICY=0)"
+        return
+    fi
+
+    bash "$WORKSPACE_DIR/verify-artifact-policy.sh"
+}
+
+if [[ "$GENERATE_SWIFT" -eq 1 ]]; then
+    rm -rf "$OUT_SWIFT"
+    generate_swift_bindings "$OUT_SWIFT"
 fi
+
+if [[ "$GENERATE_KOTLIN" -eq 1 ]]; then
+    rm -rf "$OUT_KOTLIN"
+    generate_kotlin_bindings "$OUT_KOTLIN"
+fi
+
+verify_regeneration_idempotence
+run_artifact_policy_check
 
 echo "==> Done. Generated bindings:"
 if [[ "$GENERATE_SWIFT" -eq 1 && "$GENERATE_KOTLIN" -eq 1 ]]; then

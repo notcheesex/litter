@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum TerminalBackendEvent {
     Bytes(Vec<u8>),
@@ -38,6 +38,13 @@ pub(crate) async fn open_backend(
             relay,
             shell,
         } => super::remote_alleycat::open(node_id, token, relay, shell, size).await,
+        TerminalBackendKind::RemoteDroidPty {
+            node_id,
+            token,
+            relay,
+            agent,
+            cwd,
+        } => super::droid_pty::open(node_id, token, relay, agent, cwd, size).await,
         TerminalBackendKind::RemoteSsh {
             host,
             port,

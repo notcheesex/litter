@@ -423,6 +423,7 @@ mod mobile_client_tests {
                     display_name: "Codex".to_string(),
                     wire: AlleycatAgentWire::Websocket,
                     available: true,
+                    unavailable_reason: None,
                     presentation: None,
                     capabilities: None,
                 },
@@ -434,6 +435,7 @@ mod mobile_client_tests {
                     display_name: "Droid".to_string(),
                     wire: AlleycatAgentWire::Jsonl,
                     available: true,
+                    unavailable_reason: None,
                     presentation: None,
                     capabilities: None,
                 },
@@ -445,6 +447,7 @@ mod mobile_client_tests {
                     display_name: "Amp".to_string(),
                     wire: AlleycatAgentWire::Jsonl,
                     available: true,
+                    unavailable_reason: None,
                     presentation: None,
                     capabilities: None,
                 },
@@ -463,6 +466,47 @@ mod mobile_client_tests {
                 &requested_kinds
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn app_server_runtime_selection_rejects_terminal_wire_agents() {
+        let json_droid = AlleycatAgentInfo {
+            name: "droid".to_string(),
+            display_name: "Droid".to_string(),
+            wire: AlleycatAgentWire::Jsonl,
+            available: true,
+            unavailable_reason: None,
+            presentation: None,
+            capabilities: None,
+        };
+        let pty_droid = AlleycatAgentInfo {
+            name: "droid-pty".to_string(),
+            display_name: "Droid TUI".to_string(),
+            wire: AlleycatAgentWire::Terminal,
+            available: true,
+            unavailable_reason: None,
+            presentation: None,
+            capabilities: None,
+        };
+        let mislabeled_terminal = AlleycatAgentInfo {
+            name: "droid-terminal".to_string(),
+            display_name: "Droid Terminal".to_string(),
+            wire: AlleycatAgentWire::Jsonl,
+            available: true,
+            unavailable_reason: None,
+            presentation: None,
+            capabilities: None,
+        };
+
+        assert_eq!(
+            app_server_runtime_kind_for_alleycat_agent(&json_droid),
+            Some("droid".to_string())
+        );
+        assert_eq!(app_server_runtime_kind_for_alleycat_agent(&pty_droid), None);
+        assert_eq!(
+            app_server_runtime_kind_for_alleycat_agent(&mislabeled_terminal),
+            None
         );
     }
 

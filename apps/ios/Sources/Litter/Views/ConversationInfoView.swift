@@ -14,6 +14,7 @@ struct ConversationInfoView: View {
     var onOpenWallpaper: (() -> Void)?
     var onOpenConversation: ((ThreadKey) -> Void)?
     var onOpenShell: (() -> Void)?
+    var onOpenDroidTerminal: (() -> Void)?
 
     /// Whether we're in server-only mode (no specific thread).
     private var isServerOnly: Bool { threadKey == nil }
@@ -113,6 +114,11 @@ struct ConversationInfoView: View {
             if let onOpenShell {
                 actionCircle(icon: "terminal", label: "Shell") {
                     onOpenShell()
+                }
+            }
+            if let onOpenDroidTerminal {
+                actionCircle(icon: "terminal", label: "Droid TUI") {
+                    onOpenDroidTerminal()
                 }
             }
         }

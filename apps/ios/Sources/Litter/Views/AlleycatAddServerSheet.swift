@@ -264,7 +264,8 @@ struct AlleycatAddServerSheet: View {
     }
 
     private var agentSection: some View {
-        Section {
+        let droidModeCapabilities = RustAlleycatBridge.shared.droidModeCapabilities(agents: agents)
+        return Section {
             if isLoadingAgents {
                 HStack {
                     ProgressView().tint(LitterTheme.accent)
@@ -294,7 +295,7 @@ struct AlleycatAddServerSheet: View {
                                         BetaBadge()
                                     }
                                 }
-                                Text(wireLabel(agent.wire))
+                                Text(agentModeLabel(agent, capabilities: droidModeCapabilities))
                                     .litterFont(.caption)
                                     .foregroundColor(LitterTheme.textSecondary)
                             }
@@ -548,7 +549,19 @@ struct AlleycatAddServerSheet: View {
             return "websocket"
         case .jsonl:
             return "jsonl"
+        case .terminal:
+            return "terminal"
         }
+    }
+
+    private func agentModeLabel(
+        _ agent: AppAlleycatAgentInfo,
+        capabilities: AppDroidModeCapabilities
+    ) -> String {
+        if let mode = DroidTerminalSupport.modeLabel(for: agent, capabilities: capabilities) {
+            return "\(mode) · \(wireLabel(agent.wire))"
+        }
+        return wireLabel(agent.wire)
     }
 
 }

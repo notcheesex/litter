@@ -5,11 +5,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AppStore
 import uniffi.codex_mobile_client.TerminalBackendKind
 import uniffi.codex_mobile_client.TerminalOutputListener
-import uniffi.codex_mobile_client.TerminalSession
 import uniffi.codex_mobile_client.TerminalSize
 import uniffi.codex_mobile_client.TerminalSshTrustStore
 
@@ -47,12 +47,12 @@ class TerminalSessionController(
         private set
     private var listener: TerminalOutputListener? = null
     private var outputByteSink: ((ByteArray) -> Unit)? = null
+    private val outputBuffer = TerminalOutputBuffer()
+    private var outputFlushScheduled = false
     private var eventGeneration: Int = 0
     private var terminalCols: UShort = 80u
     private var terminalRows: UShort = 24u
-
-    private fun activeSession(): TerminalSession? =
-        sessionId?.let { appStore.terminalSessionHandle(it) }
+    private var lastBackend: TerminalBackendKind? = null
 
     val canSendInput: Boolean
         get() = phase == Phase.RUNNING
@@ -63,6 +63,7 @@ class TerminalSessionController(
 
     fun open(backend: TerminalBackendKind) {
         if (sessionId != null || phase == Phase.CONNECTING) return
+        lastBackend = backend
         eventGeneration += 1
         val generation = eventGeneration
         phase = Phase.CONNECTING
@@ -78,6 +79,10 @@ class TerminalSessionController(
                     appStore.openTerminalSessionWithTrustStore(backend, size, trustStore)
                 } else {
                     appStore.openTerminalSession(backend, size)
+                }
+                if (generation != eventGeneration) {
+                    runCatching { appStore.closeTerminalSession(id) }
+                    return@launch
                 }
                 sessionId = id
                 appStore.setActiveTerminalId(id)
@@ -99,8 +104,18 @@ class TerminalSessionController(
                     override fun onExit(code: Int) {
                         scope.launch(Dispatchers.Main.immediate) {
                             if (generation == eventGeneration) {
+                                flushPendingOutput()
                                 exitCode = code
-                                phase = Phase.EXITED
+                                if (code < 0) {
+                                    errorMessage = if (output.isBlank()) {
+                                        streamClosedMessage()
+                                    } else {
+                                        streamEndedUnexpectedlyMessage()
+                                    }
+                                    phase = Phase.FAILED
+                                } else {
+                                    phase = Phase.EXITED
+                                }
                             }
                         }
                     }
@@ -109,6 +124,7 @@ class TerminalSessionController(
                 listener = outputListener
                 phase = Phase.RUNNING
             } catch (error: Exception) {
+                if (generation != eventGeneration) return@launch
                 sessionId = null
                 val challenge = sshHostTrustChallenge(error, backend)
                 if (challenge != null) {
@@ -137,7 +153,14 @@ class TerminalSessionController(
 
     fun switchBackend(backend: TerminalBackendKind) {
         close()
-        output = ""
+        clearOutput()
+        open(backend)
+    }
+
+    fun retry() {
+        val backend = lastBackend ?: return
+        close()
+        clearOutput()
         open(backend)
     }
 
@@ -147,11 +170,11 @@ class TerminalSessionController(
 
     fun sendBytes(bytes: ByteArray) {
         if (bytes.isEmpty()) return
-        val activeSession = activeSession() ?: return
+        val id = sessionId ?: return
         if (!canSendInput) return
         scope.launch {
             try {
-                activeSession.writeInput(bytes)
+                appStore.writeToTerminalSession(id, bytes)
             } catch (error: Exception) {
                 errorMessage = error.message ?: "Unable to write terminal input"
                 phase = Phase.FAILED
@@ -163,7 +186,21 @@ class TerminalSessionController(
         send("$value\n")
     }
 
+    fun interrupt() {
+        val id = sessionId ?: return
+        if (!canSendInput) return
+        scope.launch {
+            try {
+                appStore.interruptTerminalSession(id)
+            } catch (error: Exception) {
+                errorMessage = error.message ?: "Unable to interrupt terminal session"
+                phase = Phase.FAILED
+            }
+        }
+    }
+
     fun clearOutput() {
+        outputBuffer.clear()
         output = ""
     }
 
@@ -200,12 +237,12 @@ class TerminalSessionController(
         if (cols <= 0 || rows <= 0) return
         terminalCols = cols.coerceIn(1, UShort.MAX_VALUE.toInt()).toUShort()
         terminalRows = rows.coerceIn(1, UShort.MAX_VALUE.toInt()).toUShort()
-        val activeSession = activeSession() ?: return
+        val id = sessionId ?: return
         if (!notifyBackend || !canSendInput) return
         val size = TerminalSize(cols = terminalCols, rows = terminalRows)
         scope.launch {
             try {
-                activeSession.resize(size)
+                appStore.resizeTerminalSession(id, size)
             } catch (error: Exception) {
                 errorMessage = error.message ?: "Unable to resize terminal"
                 phase = Phase.FAILED
@@ -215,19 +252,56 @@ class TerminalSessionController(
 
     fun close() {
         eventGeneration += 1
-        val id = sessionId ?: return
+        val id = sessionId
         sessionId = null
         listener = null
+        outputFlushScheduled = false
         phase = Phase.IDLE
-        scope.launch {
-            runCatching { appStore.closeTerminalSession(id) }
+        if (id != null) {
+            scope.launch {
+                runCatching { appStore.closeTerminalSession(id) }
+            }
+        }
+    }
+
+    fun closeFromUser() {
+        eventGeneration += 1
+        val id = sessionId
+        sessionId = null
+        listener = null
+        outputFlushScheduled = false
+        errorMessage = null
+        sshTrustChallenge = null
+        flushPendingOutput()
+        exitCode = exitCode ?: 0
+        phase = Phase.EXITED
+        if (id != null) {
+            scope.launch {
+                runCatching { appStore.closeTerminalSession(id) }
+            }
         }
     }
 
     private fun appendOutput(data: ByteArray) {
         outputByteSink?.invoke(data.copyOf())
-        output += data.toString(Charsets.UTF_8)
-        trimOutputIfNeeded()
+        outputBuffer.append(data)
+        scheduleOutputFlush()
+    }
+
+    private fun scheduleOutputFlush() {
+        if (outputFlushScheduled) return
+        outputFlushScheduled = true
+        scope.launch(Dispatchers.Main.immediate) {
+            delay(32)
+            outputFlushScheduled = false
+            flushPendingOutput()
+        }
+    }
+
+    private fun flushPendingOutput() {
+        if (outputBuffer.flush()) {
+            output = outputBuffer.text
+        }
     }
 
     private fun normalized(value: String?): String? {
@@ -235,10 +309,18 @@ class TerminalSessionController(
         return trimmed.ifEmpty { null }
     }
 
-    private fun trimOutputIfNeeded() {
-        val maxCount = 64_000
-        if (output.length > maxCount) {
-            output = output.takeLast(maxCount)
+    private fun streamClosedMessage(): String =
+        if (lastBackend is TerminalBackendKind.RemoteDroidPty) {
+            "Droid TUI terminal stream closed. Retry the PTY session or go back."
+        } else {
+            "Terminal stream closed. Retry the session or go back."
         }
-    }
+
+    private fun streamEndedUnexpectedlyMessage(): String =
+        if (lastBackend is TerminalBackendKind.RemoteDroidPty) {
+            "Droid TUI terminal ended unexpectedly. Review terminal output, then retry if needed."
+        } else {
+            "Terminal ended unexpectedly. Review terminal output, then retry if needed."
+        }
+
 }

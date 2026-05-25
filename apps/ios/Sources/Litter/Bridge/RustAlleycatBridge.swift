@@ -15,4 +15,8 @@ final class RustAlleycatBridge: @unchecked Sendable {
     func parsePairPayload(json: String) throws -> AppAlleycatPairPayload {
         try bridge.parsePairPayload(json: json)
     }
+
+    func droidModeCapabilities(agents: [AppAlleycatAgentInfo]) -> AppDroidModeCapabilities {
+        bridge.droidModeCapabilities(agents: agents)
+    }
 }

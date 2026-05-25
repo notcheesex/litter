@@ -6,6 +6,7 @@
 
 mod backend;
 mod config;
+mod droid_pty;
 mod input;
 mod links;
 mod local_ish;
@@ -36,7 +37,10 @@ pub use renderer::{
 };
 pub use selection::{TerminalCellMetrics, TerminalCellRange};
 pub use session::{
-    TerminalBackendKind, TerminalError, TerminalOutputListener, TerminalSession, TerminalSize,
+    DroidPtySessionHandle, DroidPtySessionRequest, TerminalBackendKind, TerminalError,
+    TerminalEvent, TerminalEventKind, TerminalEventListener, TerminalOutputListener,
+    TerminalSession, TerminalSessionId, TerminalSize,
 };
+pub(crate) use session::new_terminal_session_id;
 pub use ssh::TerminalSshAuth;
 pub use ssh_known_hosts::{TerminalSshTrustBackend, TerminalSshTrustStore};
